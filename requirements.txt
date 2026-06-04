@@ -1,0 +1,12 @@
+# Python 3.10 is REQUIRED — the model classes ship as Python 3.10 bytecode
+# (MVP_MODEL/_mvp_precompiled.pyc). They will NOT load under 3.9 / 3.11+.
+#
+# Install a CUDA-matched torch/torchvision build for your GPU from
+# https://pytorch.org/get-started/locally/  (versions below are what the
+# experiments were validated with).
+torch==2.10.0
+torchvision==0.25.0
+numpy==1.26.4
+Pillow==11.3.0
+opencv-python==4.11.0.86
+wandb>=0.16            # optional; only used when WANDB_API_KEY is exported

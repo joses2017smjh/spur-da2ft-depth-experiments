@@ -1,0 +1,17 @@
+# Python caches (but KEEP the precompiled model bytecode below)
+__pycache__/
+
+# Run outputs / logs / experiment tracking
+outputs/
+logs/
+wandb/
+
+# Data + weights (shipped separately as tar archives — see README)
+*.npy
+*.pth
+*.pt
+*.h5
+
+# Editor / OS cruft
+.DS_Store
+*.swp
