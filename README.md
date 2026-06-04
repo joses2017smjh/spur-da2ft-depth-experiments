@@ -73,8 +73,11 @@ manifests/source/
 
 ## Data (shipped separately — ~88 GB)
 
-The image/depth data is far too large for git and is delivered as **tar
-archives**, not in this repo. Per modality, the box-family subset is:
+The image/depth data is far too large for git and is **not** in this repo — it's
+copied separately via `rsync`. See **[TRANSFER.md](TRANSFER.md)** for the exact
+commands (incl. a no-WSL Windows path) and the file list
+[`data_transfer_filelist.txt`](data_transfer_filelist.txt). Per modality, the
+box-family subset is:
 
 | Modality | Path under `full_spur/` | Size | Role |
 |---|---|---|---|
