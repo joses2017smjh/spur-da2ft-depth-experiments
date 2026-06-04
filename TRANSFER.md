@@ -68,6 +68,34 @@ rsync -a --partial --info=progress2 \
 
 ---
 
+## Via Google Drive (zip)
+Works if you'd rather hand off a single file than give your friend SSH access.
+Drive's free tier is 15 GB, so 88 GB needs **Google One (100 GB ≈ $2/mo)**.
+
+1. **Get the data onto the laptop** first (the MobaXterm rsync above).
+2. **Zip it** (one file uploads/downloads far better than 26,520 loose files).
+   On Windows use **7-Zip** → right-click the `Data` folder → *7-Zip → Add to
+   archive*. `.npy`/`.png` barely compress, so pick **Store** (fast) and
+   optionally **Split to volumes, 10 GB** for a resumable multi-part upload.
+   Result: `Data.zip` (or `Data.zip.001`, `.002`, …).
+3. **Upload** `Data.zip` to Google Drive (web drive.google.com, or the Drive
+   desktop app). Right-click → *Share* → "Anyone with the link" → copy the link.
+4. **Friend downloads on his HPC** with `gdown` (no Drive app needed on a node):
+   ```bash
+   pip install --user gdown
+   gdown --fuzzy "https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing" -O Data.zip
+   unzip Data.zip -d /path/to/DATA_ROOT_parent   # yields .../full_spur/...
+   ```
+   For split volumes, download each `.001/.002/...` then
+   `7z x Data.zip.001` (or `zip -s 0 Data.zip --out joined.zip && unzip joined.zip`).
+
+> Heads-up: a public Drive file downloaded many times can hit Google's
+> "quota exceeded" wall. `gdown --fuzzy` handles the big-file confirm token; if
+> you hit the quota, share to your friend's Google account directly instead of a
+> public link, or use `rclone copy` with his own Drive auth.
+
+---
+
 ## Then run
 On the machine with an NVIDIA GPU + Python 3.10:
 ```bash
