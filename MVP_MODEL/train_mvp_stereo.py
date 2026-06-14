@@ -46,7 +46,10 @@ from mvp_stereo_model import (
     stereo_mv_consistency_loss,
     masked_rmse_nview as masked_rmse_2view,
 )
-from dataset.trunk_stereo_mvp import TrunkStereoMVPDataset
+from dataset.trunk_stereo_mvp         import TrunkStereoMVPDataset
+from dataset.trunk_stereo_pair_mvp    import TrunkStereoPairMVPDataset
+from dataset.trunk_stereo_triplet_mvp import TrunkStereoTripletMVPDataset
+from dataset.trunk_stereo_quad_mvp    import TrunkStereoQuadMVPDataset
 
 
 # ── W&B import (avoids shadowing by local wandb/ run-log dir) ─────────────────
@@ -276,26 +279,35 @@ def main():
     n_views = 2 * args.n_pairs
 
     # -- DataLoaders -----------------------------------------------------------
+    # For n_pairs in {2, 3, 4} use the nearest-neighbour Pair/Triplet/Quad
+    # datasets (same as DINO trainer) so we don't need an indexed-column
+    # multi-pair manifest. n_pairs=1 uses the original TrunkStereoMVPDataset.
+    def _build_ds(manifest, train_mode):
+        kwargs = dict(H=args.H, W=args.W, path_remap=args.path_remap,
+                      pro_calib=not args.no_pro_calib)
+        if args.n_pairs == 1:
+            return TrunkStereoMVPDataset(
+                manifest, random_swap=(args.swap_stereo and train_mode),
+                n_pairs=1, **kwargs,
+            )
+        if args.n_pairs == 2:
+            return TrunkStereoPairMVPDataset(manifest, **kwargs)
+        if args.n_pairs == 3:
+            return TrunkStereoTripletMVPDataset(manifest, **kwargs)
+        if args.n_pairs == 4:
+            return TrunkStereoQuadMVPDataset(manifest, **kwargs)
+        raise ValueError(f"Unsupported --n_pairs={args.n_pairs}; expected 1, 2, 3, or 4.")
+
     if args.train_manifest:
         print(f"Building datasets from manifests … (n_pairs={args.n_pairs}, n_views={n_views})")
-        train_ds = TrunkStereoMVPDataset(
-            args.train_manifest, H=args.H, W=args.W,
-            random_swap=args.swap_stereo, path_remap=args.path_remap,
-            pro_calib=not args.no_pro_calib,
-            n_pairs=args.n_pairs,
-        )
+        train_ds = _build_ds(args.train_manifest, train_mode=True)
         train_dl = DataLoader(
             train_ds, batch_size=args.batch_size, shuffle=True,
             num_workers=args.num_workers, pin_memory=True,
         )
         val_dl = None
         if args.val_manifest:
-            val_ds = TrunkStereoMVPDataset(
-                args.val_manifest, H=args.H, W=args.W,
-                random_swap=False, path_remap=args.path_remap,
-                pro_calib=not args.no_pro_calib,
-                n_pairs=args.n_pairs,
-            )
+            val_ds = _build_ds(args.val_manifest, train_mode=False)
             val_dl = DataLoader(
                 val_ds, batch_size=args.batch_size, shuffle=False,
                 num_workers=args.num_workers, pin_memory=True,
@@ -590,6 +602,11 @@ def main():
                     except Exception:
                         pass
                 break
+
+    # Free the init snapshot — only needed mid-training as a BN-reset fallback.
+    # Leaving it behind leaks ~per-run init weights and refills the disk.
+    if os.path.isfile(_init_ckpt):
+        os.remove(_init_ckpt)
 
     print(f"\nDone (seed={args.seed}). Best checkpoint: {best_ckpt}")
     if use_wandb:

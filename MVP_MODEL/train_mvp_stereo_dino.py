@@ -40,6 +40,7 @@ from mvp_stereo_dino_model import (
 from dataset.trunk_stereo_mvp         import TrunkStereoMVPDataset
 from dataset.trunk_stereo_triplet_mvp import TrunkStereoTripletMVPDataset
 from dataset.trunk_stereo_quad_mvp    import TrunkStereoQuadMVPDataset
+from dataset.trunk_stereo_pair_mvp    import TrunkStereoPairMVPDataset
 
 
 # ── W&B import ────────────────────────────────────────────────────────────────
@@ -182,7 +183,7 @@ def main():
                     help="Max correction magnitude in metres for residual modes.")
 
     # -- model -----------------------------------------------------------------
-    ap.add_argument("--n_views",   type=int,  default=2, choices=(2, 6, 8),
+    ap.add_argument("--n_views",   type=int,  default=2, choices=(2, 4, 6, 8),
                     help="2 = single stereo pair, 6 = 3 stereo pairs")
     ap.add_argument("--pose_ch",   type=int,  default=32)
     ap.add_argument("--no_fusion", action="store_true",
@@ -248,6 +249,12 @@ def main():
                 random_swap=False, path_remap=args.path_remap,
                 pro_calib=not args.no_pro_calib,
             )
+        elif N_VIEWS == 4:
+            train_ds = TrunkStereoPairMVPDataset(
+                args.train_manifest, H=args.H, W=args.W,
+                path_remap=args.path_remap,
+                pro_calib=not args.no_pro_calib,
+            )
         elif N_VIEWS == 6:
             train_ds = TrunkStereoTripletMVPDataset(
                 args.train_manifest, H=args.H, W=args.W,
@@ -261,7 +268,7 @@ def main():
                 pro_calib=not args.no_pro_calib,
             )
         else:
-            raise ValueError(f"Unsupported n_views={N_VIEWS}; expected 2, 6, or 8.")
+            raise ValueError(f"Unsupported n_views={N_VIEWS}; expected 2, 4, 6, or 8.")
         train_dl = DataLoader(
             train_ds, batch_size=args.batch_size, shuffle=True,
             num_workers=args.num_workers, pin_memory=True,
@@ -272,6 +279,12 @@ def main():
                 val_ds = TrunkStereoMVPDataset(
                     args.val_manifest, H=args.H, W=args.W,
                     random_swap=False, path_remap=args.path_remap,
+                    pro_calib=not args.no_pro_calib,
+                )
+            elif N_VIEWS == 4:
+                val_ds = TrunkStereoPairMVPDataset(
+                    args.val_manifest, H=args.H, W=args.W,
+                    path_remap=args.path_remap,
                     pro_calib=not args.no_pro_calib,
                 )
             elif N_VIEWS == 6:
@@ -558,6 +571,11 @@ def main():
             if use_wandb:
                 wandb.run.summary["stopped_epoch"] = epoch + 1
             break
+
+    # Free the init snapshot — only needed mid-training as a BN-reset fallback.
+    # Leaving it behind leaks ~1.3 GB per run and refills the disk.
+    if os.path.isfile(_init_ckpt):
+        os.remove(_init_ckpt)
 
     print(f"\nDone (seed={args.seed}). Best checkpoint: {best_ckpt}")
     if use_wandb:

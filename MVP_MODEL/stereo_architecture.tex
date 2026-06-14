@@ -1,0 +1,470 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{multirow}
+
+\definecolor{cnnblue}{RGB}{30,100,180}
+\definecolor{dinogreen}{RGB}{20,140,80}
+\definecolor{flaggray}{RGB}{80,80,80}
+\definecolor{noteblue}{RGB}{60,100,200}
+\definecolor{warnred}{RGB}{180,40,40}
+
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries}{}{0em}{}
+\hypersetup{colorlinks=true, linkcolor=noteblue, urlcolor=noteblue}
+
+\title{\textbf{Stereo Depth Refinement: MVP vs DINO}\\
+\large Architecture Reference --- Stereo Pair Models}
+\author{Computer Vision Project --- Tree Trunk Reconstruction}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Problem and Setup}
+
+Given a stereo pair of PRO depth maps (and optionally RGB images and camera
+poses), the models produce \textbf{refined metric-scale depth maps} per view.
+The key challenges being addressed are:
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{Scale ambiguity} --- monocular PRO depth has an arbitrary per-image scale
+    \item \textbf{View inconsistency} --- left and right views produce inconsistent depth
+    \item \textbf{Edge noise} --- depth boundaries are noisy at thin structures
+\end{itemize}
+
+\subsection{Common Interface}
+
+Both models share the same forward signature and output contract:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Input} & \textbf{Shape} & \textbf{Required?} & \textbf{Description} \\
+\midrule
+\texttt{rgb}    & $(B,\;V,\;3,\;H,\;W)$ & \texttt{use\_rgb=True} & RGB images, ImageNet-normalised \\
+\texttt{d\_pro} & $(B,\;V,\;1,\;H,\;W)$ & Always                 & PRO monocular depth, median-scaled \\
+\texttt{pose\_T}& $(B,\;V,\;4,\;4)$     & \texttt{use\_pose=True} & World-to-camera transforms \\
+\midrule
+\texttt{output} & $(B,\;V,\;1,\;H,\;W)$ & ---                    & Refined metric depth per view \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Here $V = 2 \cdot n\_\text{pairs}$ is the total number of views; for a single
+stereo pair $V=2$ (left $L$ and right $R$).  The default training resolution is
+$H=280$, $W=512$.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{\textcolor{flaggray}{Configuration Flags}}
+
+Both models accept the following flags that ablate or remove specific inputs:
+
+\begin{center}
+\begin{tabular}{lllp{6.5cm}}
+\toprule
+\textbf{Flag} & \textbf{Default} & \textbf{Applies to} & \textbf{Effect} \\
+\midrule
+\texttt{n\_views}   & 2    & Both  & Total views to fuse; 2 = single stereo pair, 6 = 3 pairs \\
+\texttt{use\_rgb}   & True & MVP   & False $\Rightarrow$ depth-only encoder ($\text{in\_ch}=1$, no RGB concatenation); not supported in DINO (ViT-L requires RGB) \\
+\texttt{use\_pose}  & True & Both  & False $\Rightarrow$ no pose embedding at bottleneck; views are fused purely from appearance \\
+\texttt{no\_fusion} & False & Both & True $\Rightarrow$ each view decoded independently --- disables both pose and cross-view fusion (strongest ablation) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Current target configuration.}
+Single stereo depth pair, no RGB, no pose:
+\begin{verbatim}
+# MVP
+python train_mvp_stereo.py --no_rgb --no_pose ...
+# DINO  (RGB required by ViT; pose disabled)
+python train_mvp_stereo_dino.py --no_pose ...
+\end{verbatim}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{\textcolor{cnnblue}{MVP Model: MVStereoUNet (CNN baseline)}}
+
+\subsection{Overview}
+
+A from-scratch UNet where all views share encoder and decoder weights.
+Cross-view information is exchanged at the bottleneck via a $1\times1$
+convolution that sees all views simultaneously.
+
+\subsection{Per-View Encoder}
+
+The encoder accepts a concatenated input per view and produces a bottleneck
+feature map plus four skip connections.
+
+\[
+x_i =
+\begin{cases}
+[\,\text{rgb}_i \;\|\; \text{d\_pro}_i\,] \in \mathbb{R}^{B \times 4 \times H \times W} & \text{use\_rgb=True} \\
+\text{d\_pro}_i \in \mathbb{R}^{B \times 1 \times H \times W} & \text{use\_rgb=False}
+\end{cases}
+\]
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Stage} & \textbf{Operation} & \textbf{Output shape} & \textbf{Role} \\
+\midrule
+\texttt{enc0} & \texttt{ConvBlock}($c_\text{in} \to 64$)          & $(B,\;64,\;H,\;W)$        & Skip $s_0$ \\
+\texttt{enc1} & \texttt{MaxPool + ConvBlock}($64 \to 128$)        & $(B,\;128,\;H/2,\;W/2)$   & Skip $s_1$ \\
+\texttt{enc2} & \texttt{MaxPool + ConvBlock}($128 \to 256$)       & $(B,\;256,\;H/4,\;W/4)$   & Skip $s_2$ \\
+\texttt{enc3} & \texttt{MaxPool + ConvBlock}($256 \to 512$)       & $(B,\;512,\;H/8,\;W/8)$   & Skip $s_3$ \\
+\texttt{bnk}  & \texttt{MaxPool + ConvBlock}($512 \to 512$)       & $(B,\;512,\;H/16,\;W/16)$ & Bottleneck $b_i$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Where $c_\text{in} = 4$ (\texttt{use\_rgb=True}) or $1$ (\texttt{use\_rgb=False}).
+Each \texttt{ConvBlock} is: Conv$3\times3 \to$ BN $\to$ ReLU $\to$ Conv$3\times3 \to$ BN $\to$ ReLU.
+
+\subsection{Pose Injection (optional, \texttt{use\_pose=True})}
+
+Camera geometry is encoded as three absolute scalars relative to a reference
+camera (\texttt{box/shot01}):
+
+\[
+\mathbf{e}_i = \begin{bmatrix}
+T[2,3] - 0.85 \\
+\text{atan2}(R[1,0],\,R[0,0]) + 3.0885 \;\;(\text{wrapped to } [-\pi,\pi]) \\
+\sqrt{T[0,3]^2 + T[1,3]^2} - 12.148
+\end{bmatrix} \in \mathbb{R}^3
+\]
+
+These encode height above ground, azimuth angle, and radial distance from the
+trunk respectively.  They are projected to a $p_\text{ch}$-dim embedding and
+broadcast to the bottleneck spatial grid:
+
+\[
+\mathbf{p}_i = \text{PoseProject}(\mathbf{e}_i) \in \mathbb{R}^{p_\text{ch}}, \quad
+\tilde{b}_i = [\,b_i \;\|\; \mathbf{p}_i\,] \in \mathbb{R}^{B \times (512 + p_\text{ch}) \times h \times w}
+\]
+
+where $p_\text{ch} = 32$ by default, $h = H/16$, $w = W/16$.
+
+When \texttt{use\_pose=False}, $\tilde{b}_i = b_i$ (no pose appended).
+
+\subsection{Cross-View Fusion}
+
+All $V$ pose-augmented (or plain) bottlenecks are concatenated and reduced
+to a single shared bottleneck via a learned $1\times1$ convolution:
+
+\[
+b_\text{fused} = \text{Conv}_{1\times1}\!\bigl([\,\tilde{b}_0 \;\|\; \cdots \;\|\; \tilde{b}_{V-1}\,]\bigr),
+\quad
+\underbrace{V \times (512 + p_\text{ch})}_{\text{or } V \times 512} \;\to\; 512
+\]
+
+This single step allows the network to transfer depth cues across views --- if
+the trunk is occluded in one view the other can fill in the information.
+
+\subsection{Per-View Decoder}
+
+Each view is decoded using the \textbf{same fused bottleneck} but its
+\textbf{own} view-specific skip connections:
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Stage} & \textbf{Operation} & \textbf{Output shape} & \textbf{Skip} \\
+\midrule
+\texttt{up3} & Upsample + cat + \texttt{ConvBlock}($1024 \to 512$) & $(B,\;512,\;H/8,\;W/8)$  & $s_3$ \\
+\texttt{up2} & Upsample + cat + \texttt{ConvBlock}($768 \to 256$)  & $(B,\;256,\;H/4,\;W/4)$  & $s_2$ \\
+\texttt{up1} & Upsample + cat + \texttt{ConvBlock}($384 \to 128$)  & $(B,\;128,\;H/2,\;W/2)$  & $s_1$ \\
+\texttt{up0} & Upsample + cat + \texttt{ConvBlock}($192 \to 64$)   & $(B,\;64,\;H,\;W)$        & $s_0$ \\
+\texttt{head}& Conv$1\times1(64 \to 1)$ + \texttt{softplus}        & $(B,\;1,\;H,\;W)$         & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\texttt{softplus} guarantees positive depth:
+$\text{softplus}(x) = \ln(1 + e^x)$.
+
+\subsection{Parameter Count}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Configuration} & \textbf{Parameters} & \textbf{Notes} \\
+\midrule
+\texttt{use\_rgb=True, use\_pose=True}  & $\approx 31$M & Full model \\
+\texttt{use\_rgb=False, use\_pose=True} & $\approx 30$M & Depth-only encoder \\
+\texttt{use\_rgb=False, use\_pose=False}& $\approx 30$M & Depth-only, no pose \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{\textcolor{dinogreen}{DINO Model: MVStereoDINOUNet}}
+
+\subsection{Overview}
+
+A drop-in replacement for \texttt{MVStereoUNet} that swaps the from-scratch CNN
+encoder for a \textbf{frozen DINOv2 ViT-L backbone} (304M params) combined with
+a trainable \textbf{Depth Side Branch}.  The pose encoding, cross-view fusion,
+and decoder are structurally identical.  Only $\approx 5$M parameters are
+trained.
+
+\subsection{DINOv2ViTLEncoder}
+
+DINOv2 requires 3-channel RGB and cannot accept a 4-channel concatenation.
+Depth is therefore processed in a \emph{parallel} branch and fused at the
+skip-connection level.
+
+\subsubsection{RGB path (frozen)}
+
+\begin{enumerate}[leftmargin=2em]
+  \item Pad RGB to nearest multiple of 14: $W=512 \to 518$, $H=280 \to 280$
+  \item Pass through DINOv2 ViT-L/14 (frozen)
+  \item Extract intermediate token outputs from blocks 5, 11, 17, 23
+  \item Reshape tokens $(B, N, 1024) \to (B, 1024, h_t, w_t)$ where $h_t = \lceil H/14 \rceil$
+  \item Project $1024 \to 256$ (skips) and $1024 \to 512$ (bottleneck) via $1\times1$ conv
+  \item Upsample to target skip resolutions
+\end{enumerate}
+
+\begin{center}
+\begin{tabular}{lllll}
+\toprule
+\textbf{Block} & \textbf{Token shape} & \textbf{After reshape} & \textbf{Projected} & \textbf{Upsampled to} \\
+\midrule
+5  & $(B,N,1024)$ & $(B,1024,h_t,w_t)$ & $(B,256,h_t,w_t)$ & $(B,256,H,W)$       = $s_0$ \\
+11 & $(B,N,1024)$ & $(B,1024,h_t,w_t)$ & $(B,256,h_t,w_t)$ & $(B,256,H/2,W/2)$   = $s_1$ \\
+17 & $(B,N,1024)$ & $(B,1024,h_t,w_t)$ & $(B,256,h_t,w_t)$ & $(B,256,H/4,W/4)$   = $s_2$ \\
+23 & $(B,N,1024)$ & $(B,1024,h_t,w_t)$ & $(B,256,h_t,w_t)$ & $(B,256,H/8,W/8)$   = $s_3$ \\
+23 & $(B,N,1024)$ & $(B,1024,h_t,w_t)$ & $(B,512,h_t,w_t)$ & (kept at $H/14$)    = $b$   \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsubsection{Depth path (trainable)}
+
+The Depth Side Branch is a three-stage strided CNN:
+
+\[
+\text{d\_pro} \xrightarrow{\text{Conv}_{3\times3}\,\text{stride-1}} \mathbf{d}_0 \in \mathbb{R}^{B\times32\times H\times W}
+\xrightarrow{\text{stride-2}} \mathbf{d}_1 \in \mathbb{R}^{B\times64\times H/2\times W/2}
+\xrightarrow{\text{stride-2}} \mathbf{d}_2 \in \mathbb{R}^{B\times128\times H/4\times W/4}
+\]
+
+\subsubsection{Skip fusion}
+
+ViT skips and depth features are fused via concatenation and $1\times1$ conv:
+
+\[
+s_k^{\text{fused}} = \text{Conv}_{1\times1}\!\bigl([s_k^{\text{ViT}} \;\|\; \mathbf{d}_k]\bigr)
+\in \mathbb{R}^{B \times 256 \times \cdot \times \cdot}, \quad k \in \{0,1,2\}
+\]
+
+Skips $s_3$ and bottleneck $b$ are at resolutions too coarse for depth detail
+($H/8$ and $H/14$), so no depth fusion is applied there.
+
+\subsection{Pose Injection and Cross-View Fusion}
+
+Identical to \texttt{MVStereoUNet}: absolute 3-scalar pose encoding $\to$
+\texttt{PoseProject} $\to$ broadcast concat at bottleneck $\to$
+$1\times1$ fusion conv.  Controlled by \texttt{use\_pose} flag.
+
+\subsection{DINODecoder}
+
+Uniform 256-channel skips require a different decoder width schedule compared
+to the CNN decoder:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\textbf{Stage} & \textbf{Operation} & \textbf{Output shape} \\
+\midrule
+\texttt{up3} & Upsample + cat + \texttt{ConvBlock}($512 + 256 \to 256$) & $(B,\;256,\;H/8,\;W/8)$ \\
+\texttt{up2} & Upsample + cat + \texttt{ConvBlock}($256 + 256 \to 256$) & $(B,\;256,\;H/4,\;W/4)$ \\
+\texttt{up1} & Upsample + cat + \texttt{ConvBlock}($256 + 256 \to 128$) & $(B,\;128,\;H/2,\;W/2)$ \\
+\texttt{up0} & Upsample + cat + \texttt{ConvBlock}($128 + 256 \to 64$)  & $(B,\;64,\;H,\;W)$ \\
+\texttt{head}& Conv$1\times1(64 \to 1)$ + \texttt{softplus}             & $(B,\;1,\;H,\;W)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Parameter Count}
+
+\begin{center}
+\begin{tabular}{lrl}
+\toprule
+\textbf{Component} & \textbf{Parameters} & \textbf{Trainable?} \\
+\midrule
+DINOv2 ViT-L backbone         & $\approx 304$M & \textcolor{warnred}{Frozen} \\
+Skip projection ($1\times1$ convs) & $\approx 3.0$M & Yes \\
+Depth side branch              & $\approx 0.1$M & Yes \\
+Skip fusion ($1\times1$ convs) & $\approx 0.5$M & Yes \\
+Pose MLP + fuse conv           & $\approx 0.3$M & Yes \\
+DINODecoder                    & $\approx 1.8$M & Yes \\
+\midrule
+\textbf{Total}     & $\approx 310$M & \\
+\textbf{Trainable} & $\approx 5.7$M & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Loss Functions}
+
+\subsection{Primary Loss: Scale-Invariant Log (SiLog)}
+
+All depth pixels are gated by a trunk mask \emph{and} a depth validity range
+$[d_\text{min},\, d_\text{max}]$ (default $[0.5\,\text{m},\; 10.0\,\text{m}]$).
+Background seen through canopy gaps has true Blender depth of $77$--$200\,$m
+and must be excluded even though it falls inside the silhouette mask.
+
+For each view $v$, letting $\hat{d}$ and $d$ denote predicted and GT depth:
+
+\[
+m^{(v)}_{ij} = \text{mask}^{(v)}_{ij}
+               \cdot \mathbf{1}[d^{(v)}_{ij} > d_\text{min}]
+               \cdot \mathbf{1}[d^{(v)}_{ij} < d_\text{max}]
+\]
+
+\[
+\delta^{(v)}_{ij} = \bigl(\ln \hat{d}^{(v)}_{ij} - \ln d^{(v)}_{ij}\bigr) \cdot m^{(v)}_{ij}
+\]
+
+\[
+n_v = \sum_{i,j} m^{(v)}_{ij} + \varepsilon
+\]
+
+\[
+\mathcal{L}_{\text{silog}}^{(v)}
+= \sqrt{\max\!\left(
+    \frac{\sum_{i,j} (\delta^{(v)}_{ij})^2}{n_v}
+    \;-\;
+    \alpha \cdot \left(\frac{\sum_{i,j} \delta^{(v)}_{ij}}{n_v}\right)^{\!2},\;
+    0
+  \right)}
+\]
+
+where $\alpha = 0.85$ (variance focus).  The total supervised loss is:
+
+\[
+\mathcal{L}_{\text{silog}} = \sum_{v=0}^{V-1} \mathcal{L}_{\text{silog}}^{(v)}
+\]
+
+\paragraph{Why SiLog?}
+\begin{itemize}[leftmargin=2em, noitemsep]
+  \item \textbf{Scale-invariant}: predicting $c \cdot \hat{d}$ for all pixels
+        gives $\delta_{ij} = \ln c$ (constant), so the variance term is zero and
+        a uniform scale error is fully absorbed.
+  \item \textbf{Structure-focused}: the $\alpha$ term down-weights global mean
+        error in favour of local depth variation --- the model learns the
+        \emph{shape} of the trunk surface, not just its absolute distance.
+  \item \textbf{Robust}: log-space errors are bounded even for very large or
+        very small predicted values, unlike MSE.
+\end{itemize}
+
+\subsection{Optional: Stereo Multi-View Consistency Loss}
+
+When \texttt{--lambda\_mv $> 0$}, a geometric consistency term is added after a
+warmup period (\texttt{--mv\_warmup\_epochs}).  For each stereo pair $(L, R)$,
+a \emph{bidirectional} warp is computed:
+
+\begin{enumerate}[leftmargin=2em]
+  \item Unproject source GT depth to 3D using intrinsics $K$:
+        $\mathbf{P}_\text{src} = K^{-1}[u,v,1]^\top \cdot d_\text{GT,src}$
+  \item Transform to target frame: $\mathbf{P}_\text{tgt} = T_{s\to t}\, \mathbf{P}_\text{src}$
+  \item Project onto target image: $[u_t, v_t] = K\,\mathbf{P}_\text{tgt} \,/\, z_t$
+  \item Sample predicted depth at $(u_t, v_t)$: $\hat{d}_\text{tgt}^{\text{warped}}$
+  \item Loss: $\bigl|\ln \hat{d}_\text{tgt}^{\text{warped}} - \ln z_t\bigr|$ on valid pixels
+\end{enumerate}
+
+Only stereo pairs with baseline $\leq 0.80\,$m contribute.  Valid pixels must
+be in-bounds, trunk-masked in both views, and depth-gated.  The total loss is:
+
+\[
+\mathcal{L}_\text{total}
+= \mathcal{L}_\text{silog} + \lambda_\text{mv} \cdot \mathcal{L}_\text{warp}
+\]
+
+GT depth is used for unprojection (not predictions) so the geometric signal is
+reliable even when model predictions are poor early in training.
+
+\subsection{Evaluation Metric: Masked RMSE}
+
+\[
+\text{RMSE}^{(v)} = \sqrt{\frac{\sum_{i,j} m^{(v)}_{ij}\,(\hat{d}_{ij}^{(v)} - d_{ij}^{(v)})^2}{\sum_{i,j} m^{(v)}_{ij} + \varepsilon}}
+\]
+
+averaged over all $V$ views.  Units are the same as depth (Blender units
+$\approx$ metres in this dataset).
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{MVP vs DINO Comparison}
+
+\begin{center}
+\begin{tabular}{lp{4.5cm}p{4.5cm}}
+\toprule
+\textbf{Component} & \textbf{MVP (MVStereoUNet)} & \textbf{DINO (MVStereoDINOUNet)} \\
+\midrule
+Encoder & From-scratch UNet CNN & Frozen DINOv2 ViT-L/14 \\
+Depth handling & Concatenated with RGB at input (or depth-only) & Separate trainable depth branch, fused at skip level \\
+Skip channels & 64 / 128 / 256 / 512 (progressive) & Uniform 256 at all 4 levels \\
+Bottleneck channels & 512 & 512 (projected from ViT 1024) \\
+Trainable params & $\approx 31$M (all) & $\approx 5.7$M (backbone frozen) \\
+Pose encoding & Identical & Identical \\
+Cross-view fusion & Identical $1\times1$ conv & Identical $1\times1$ conv \\
+Output activation & \texttt{softplus} & \texttt{softplus} \\
+Loss functions & SiLog + optional warp & Identical \\
+\texttt{use\_rgb=False} & Supported (in\_ch=1) & Not supported (ViT requires RGB) \\
+\texttt{use\_pose=False} & Supported & Supported \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{File Inventory}
+
+\subsection{Files to Keep}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{File} & \textbf{Why needed} \\
+\midrule
+\texttt{mvp\_stereo\_model.py}       & MVP model + all loss/metric functions \\
+\texttt{mvp\_stereo\_dino\_model.py} & DINO model (imports from the above) \\
+\texttt{mvp\_depth\_model\_Unet.py}  & Shared UNet blocks imported by MVP model \\
+\texttt{mvp\_depth\_refine\_model.py}& DINOv2ViTLEncoder + DINODecoder imported by DINO model \\
+\texttt{train\_mvp\_stereo.py}       & Training script for MVP \\
+\texttt{train\_mvp\_stereo\_dino.py} & Training script for DINO \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Files That Can Be Deleted}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+\textbf{File} & \textbf{Reason to delete} \\
+\midrule
+\texttt{mvp\_model.py}                & SimpleFusionModel --- 3D keypoint prediction, different task \\
+\texttt{mvp\_train.py}                & Training script for SimpleFusionModel \\
+\texttt{mvp\_inference.py}            & Inference script for SimpleFusionModel \\
+\texttt{pro\_depth\_model.py}         & ProDepthUNet (depth-only ablation, superseded by \texttt{--no\_rgb}) \\
+\texttt{train\_pro\_depth.py}         & Training script for ProDepthUNet \\
+\texttt{train\_mvp\_stereo\_triplet.py} & 6-view triplet training; \texttt{train\_mvp\_stereo\_dino.py --n\_views 6} covers this \\
+\texttt{mvp\_depth\_refine\_train.py} & Training for old 3-view CNN (MVUNetPoseConcat); superseded \\
+\texttt{mvp\_unet\_train.py}          & Duplicate/legacy training script \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

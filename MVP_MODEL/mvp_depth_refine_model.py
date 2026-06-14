@@ -1,7 +1,7 @@
 """Stub: source was deleted; loads classes from precompiled bytecode."""
-import importlib.util, os, sys
+import importlib.util, sys
 
-_PYC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_mvp_precompiled.pyc")
+_PYC = "/nfs/hpc/share/sanchej7/Computer_Vision/MVP_MODEL/_mvp_precompiled.pyc"
 
 # Reuse the already-loaded module if mvp_depth_model_Unet.py loaded it first.
 if "_mvp_precompiled" not in sys.modules:

@@ -1,0 +1,708 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{listings}
+
+\definecolor{filegray}{RGB}{80,80,80}
+\definecolor{flagblue}{RGB}{30,80,180}
+\definecolor{warnred}{RGB}{180,40,40}
+\definecolor{codebg}{RGB}{245,245,248}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  backgroundcolor=\color{codebg},
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  framesep=4pt,
+  numbers=left, numberstyle=\tiny\color{filegray},
+  showstringspaces=false,
+}
+
+\titleformat{\section}{\large\bfseries}{}{0em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries}{}{0em}{}
+\hypersetup{colorlinks=true,linkcolor=flagblue,urlcolor=flagblue}
+
+\title{\textbf{Stereo Depth Refinement --- Experimental Workflow}\\
+\large Code Walkthrough for the Earlier Stereo Refinement and
+Encoder/Fusion Ablation Tables}
+\author{Computer Vision Project --- Tree Trunk Reconstruction}
+\date{\today}
+
+\newcommand{\fref}[2]{\texttt{\textcolor{filegray}{#1}}:\textbf{#2}}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Scope and a Note on ``MVSNet''}
+
+This document explains, at the level of individual flags and lines of code,
+exactly how the runs in the \emph{Earlier Stereo Refinement Ablations}
+(bark\_brown\_02, \texttt{full\_spur} via path remap, 5 seeds) and in
+\emph{Table~4: Encoder and fusion ablation} were produced. All variants in
+both tables are implemented in the code at
+\texttt{/nfs/hpc/share/sanchej7/Computer\_Vision/MVP\_MODEL/} and use exactly
+two source files for the model definitions:
+\begin{itemize}[leftmargin=2em]
+  \item \fref{mvp\_stereo\_model.py}{1--365} --- from-scratch CNN UNet
+        stereo (\textbf{MVStereoUNet}).
+  \item \fref{mvp\_stereo\_dino\_model.py}{1--384} --- DINOv2-backed stereo
+        (\textbf{MVStereoDINOUNet}) and depth-only side-branch
+        (\textbf{StereoDepthDINOUNet}).
+\end{itemize}
+
+\paragraph{\textcolor{warnred}{Naming clarification.}}
+There is \textbf{no MVSNet} (Yao et al.\ cost-volume MVS) in this repository.
+What the experiments call ``MV Stereo'' is short for the
+\textbf{multi-view stereo \emph{refinement}} family
+(\texttt{MVStereoUNet} / \texttt{MVStereoDINOUNet}): models that take a
+PRO monocular depth prior plus an L/R image pair and produce refined depth
+maps. The ``MV'' refers to multi-\emph{view} fusion at the UNet bottleneck,
+not to constructing a plane-sweep cost volume. Where the table writes
+``CNN MVStereoUNet'' this is the from-scratch CNN baseline at
+\fref{mvp\_stereo\_model.py}{70--191}.
+
+\paragraph{Validity of Table 4: ``Depth side branch + DINODecoder, no
+pretrained backbone''.}
+This variant does exist in the code: it is the class
+\texttt{StereoDepthDINOUNet} at
+\fref{mvp\_stereo\_dino\_model.py}{169--259}. It uses the
+\texttt{DepthSideBranch} encoder (re-exported from the precompiled
+\texttt{\_mvp\_precompiled.pyc} via
+\fref{mvp\_depth\_refine\_model.py}{1--30}) and the trainable
+\texttt{DINODecoder}, with \emph{no} frozen DINOv2 backbone. It is
+activated by the CLI flag \texttt{-{}-depth\_only}, handled at
+\fref{train\_mvp\_stereo\_dino.py}{131--132,237--244,321--327} (the forward
+path uses only \texttt{d\_pro}, not \texttt{rgb}). So the row is
+reproducible.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{File Map}
+
+\begin{center}\small
+\begin{tabular}{p{6cm}p{8.5cm}}
+\toprule
+\textbf{File} & \textbf{Role} \\
+\midrule
+\fref{train\_mvp\_stereo.py}{1--499} &
+  Trainer for \texttt{MVStereoUNet} (from-scratch CNN). \\
+\fref{train\_mvp\_stereo\_dino.py}{1--482} &
+  Trainer for \texttt{MVStereoDINOUNet} (frozen DINOv2 ViT-L)
+  \emph{and} \texttt{StereoDepthDINOUNet} (depth-only side branch). \\
+\fref{train\_pro\_depth.py}{1--401} &
+  Trainer for the depth-only configuration of \texttt{MVStereoUNet}
+  (\texttt{use\_rgb=False}, \texttt{use\_pose=False}). \\
+\fref{mvp\_stereo\_model.py}{1--365} &
+  \texttt{MVStereoUNet}, SiLog loss, MV-consistency loss, masked RMSE. \\
+\fref{mvp\_stereo\_dino\_model.py}{1--384} &
+  \texttt{MVStereoDINOUNet}, \texttt{StereoDepthDINOUNet},
+  \texttt{PluckerEmbedder}. \\
+\fref{mvp\_depth\_model\_Unet.py}{1--27} &
+  Stub: re-exports \texttt{ConvBlock/Down/Up/UNetEncoder/UNetDecoder/
+  PoseProject} and pose-base constants from
+  \texttt{\_mvp\_precompiled.pyc}. \\
+\fref{mvp\_depth\_refine\_model.py}{1--30} &
+  Stub: re-exports \texttt{DepthSideBranch/DINOv2ViTLEncoder/DINODecoder}
+  from the same precompiled module. \\
+\fref{dataset/trunk\_stereo\_mvp.py}{1--275} &
+  Stereo-pair dataset (RGB+PRO+GT+mask+K+T\_wc; PRO calibrated by
+  global $\alpha,\beta$). \\
+\fref{simple\_stereo/model.py}{1--400} &
+  Self-contained simpler stereo variants
+  (\texttt{StereoDepthCNN}, \texttt{StereoDepthDINO}); not used for
+  the published tables but available as a sanity baseline. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Data Pipeline: \texttt{TrunkStereoMVPDataset}}
+
+\subsection{What each sample contains}
+
+For every stereo row in the manifest CSV, the loader returns a dict with
+the following stacked tensors (primary view followed by secondary view):
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+\textbf{Key} & \textbf{Shape} & \textbf{Notes} \\
+\midrule
+\texttt{rgb}   & $(2,3,H,W)$ & ImageNet normalised
+                              (\fref{dataset/trunk\_stereo\_mvp.py}{56--57,230--232}) \\
+\texttt{d\_pro} & $(2,1,H,W)$ & calibrated PRO depth (see below) \\
+\texttt{d\_gt}  & $(2,1,H,W)$ & GT depth; infinity sentinels
+                                ($\geq 10^9$) zeroed
+                                (\fref{}{236}) \\
+\texttt{mask}   & $(2,1,H,W)$ & trunk silhouette (1 if no mask file given) \\
+\texttt{K}      & $(2,3,3)$    & camera intrinsics
+                                  (\fref{}{99--109}) \\
+\texttt{T\_wc}  & $(2,4,4)$    & world-to-camera, OpenCV convention
+                                  (\fref{}{75--96}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Manifest filtering and path remap}
+\fref{dataset/trunk\_stereo\_mvp.py}{147--171}: rows are dropped if either
+view is missing its annotation JSON or the derived PRO-depth file. The
+optional \texttt{-{}-path\_remap "OLD:NEW"} CLI flag, parsed at
+\fref{train\_mvp\_stereo.py}{144--145} (mirrored in the DINO and PRO
+trainers), is applied at
+\fref{dataset/trunk\_stereo\_mvp.py}{139--153} by replacing the prefix in
+every column of every row. \textbf{This is the mechanism by which the
+``Earlier Stereo Refinement Ablations'' runs read
+\texttt{full\_spur} data even though the manifest column says
+\texttt{full\_trunk}}: the run was invoked with
+\texttt{-{}-path\_remap full\_trunk:full\_spur}.
+
+\subsection{PRO depth calibration --- global $\alpha,\beta$}
+\fref{dataset/trunk\_stereo\_mvp.py}{63--68,265--274}:
+
+\begin{itemize}[leftmargin=2em]
+  \item Raw PRO depth is loaded from
+        \texttt{depth\_path.replace("/depth/","/pro\_refine/")}
+        (\fref{}{163--164,204}).
+  \item It is resized to $(H,W)$ by bilinear interpolation
+        (\fref{}{266}).
+  \item The fixed global calibration
+        $d_{\text{cal}} = \alpha\, d_{\text{raw}} + \beta$ is applied,
+        with $\alpha = -0.0661$, $\beta = 1.556$
+        (sign-flipping because raw PRO is inversely correlated with GT).
+  \item Output is clamped to $\geq 10^{-3}$~m
+        (\fref{}{274}) so the SiLog log is safe.
+  \item If the .npy is truncated/corrupt the loader silently returns
+        the constant $\beta$ everywhere
+        (\fref{}{258--263}) --- a deliberate fallback.
+\end{itemize}
+
+\textbf{Important for interpreting the ``PRO Depth: Global $\alpha,\beta$''
+column in the earlier-ablations table.} This calibration is always
+applied. The only experiment that nullifies PRO depth as a signal is the
+\texttt{-{}-rgb\_only} run for the DINO trainer, which zeros out
+\texttt{d\_pro} \emph{after} loading
+(\fref{train\_mvp\_stereo\_dino.py}{325--326}).
+
+\subsection{Pose decoding}
+\fref{dataset/trunk\_stereo\_mvp.py}{75--96}: annotations store Blender
+location and XYZ-Euler. The loader builds the rotation matrix, applies
+the Blender$\to$OpenCV axis flip $\mathrm{diag}(1,-1,-1,1)$, and inverts
+to obtain $T_{wc}$. $K$ is read directly
+(\fref{}{104--106}).
+
+\subsection{Random L/R swap}
+Activated only for training by \texttt{-{}-swap\_stereo}
+(\fref{train\_mvp\_stereo.py}{149--150,224}). When set, primary and
+secondary descriptors are swapped with prob.\ 0.5 inside
+\fref{dataset/trunk\_stereo\_mvp.py}{193--194}. It is forced to
+\texttt{False} for validation
+(\fref{train\_mvp\_stereo.py}{234}).
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Model A --- \texttt{MVStereoUNet} (CNN, from scratch)}
+
+\subsection{Class location and constructor flags}
+\fref{mvp\_stereo\_model.py}{70--121}:
+\begin{itemize}[leftmargin=2em]
+  \item \texttt{n\_views} (default 2) --- total views to fuse;
+        $V=2$ for one stereo pair, $V=6$ for three pairs.
+  \item \texttt{use\_rgb} (default \texttt{True}) ---
+        \texttt{in\_ch}$=4$ (RGB$\oplus$PRO) when true,
+        \texttt{in\_ch}$=1$ (depth only) when false
+        (\fref{}{110}).
+  \item \texttt{use\_pose} (default \texttt{True}) --- enables the
+        bottleneck pose embedding; auto-disabled when
+        \texttt{no\_fusion=True}
+        (\fref{}{108}).
+  \item \texttt{base} (default 64) --- UNet base channel width.
+  \item \texttt{pose\_ch} (default 32) --- pose MLP output channels.
+  \item \texttt{no\_fusion} (default \texttt{False}) --- if true, both
+        encoder bottlenecks are decoded \emph{independently}, no pose,
+        no fuse conv built
+        (\fref{}{113--119}).
+\end{itemize}
+
+\subsection{Building blocks (loaded from precompiled bytecode)}
+The actual \texttt{ConvBlock/Down/Up/UNetEncoder/UNetDecoder/PoseProject}
+classes live inside \texttt{\_mvp\_precompiled.pyc} and are imported via
+\fref{mvp\_depth\_model\_Unet.py}{11--16}. Their shape contract (verified
+against the parallel \texttt{simple\_stereo} reference at
+\fref{simple\_stereo/model.py}{72--123}) is:
+
+\begin{itemize}[leftmargin=2em]
+  \item \texttt{UNetEncoder(in\_ch, base)} returns
+        \texttt{(bottleneck, skips)} where the bottleneck is
+        $(B,\,8\,\text{base},\,H/16,\,W/16)$ and skips is a 4-tuple at
+        full / half / quarter / eighth resolution.
+  \item \texttt{UNetDecoder(base)} expects the same skip schema and
+        produces a $(B,1,H,W)$ logit, then the model applies
+        \texttt{F.softplus(clamp(-20,20))} per view
+        (\fref{mvp\_stereo\_model.py}{174,189}).
+\end{itemize}
+
+\subsection{Pose encoding (3 absolute scalars)}
+\fref{mvp\_stereo\_model.py}{135--148}:
+\[
+  \Delta z = T_{wc}[2,3] - z_{\text{base}},\quad
+  \Delta\theta = \mathrm{atan2}(R_{10}, R_{00}) - \theta_{\text{base}},\quad
+  \Delta r = \sqrt{T_{wc}[0,3]^2 + T_{wc}[1,3]^2} - r_{\text{base}},
+\]
+with $z_{\text{base}}=1.43$, $\theta_{\text{base}}=0.0$,
+$r_{\text{base}}=11.66$ defined in
+\fref{mvp\_depth\_model\_Unet.py}{24--26}. $\Delta\theta$ is wrapped to
+$[-\pi,\pi]$
+(\fref{mvp\_stereo\_model.py}{141}). \texttt{PoseProject} (2-layer MLP
+$3\to\text{pose\_ch}$) is applied per view, broadcast to the bottleneck
+$(H_b,W_b)$, and concatenated channel-wise before fusion
+(\fref{}{179--183}).
+
+\subsection{Forward path}
+\fref{mvp\_stereo\_model.py}{150--191}, in plain English:
+
+\begin{enumerate}[leftmargin=2em]
+  \item \texttt{for i in range(V):} encode view $i$. Input is
+        $(\text{rgb}_i \oplus \text{d\_pro}_i)$ when \texttt{use\_rgb} else
+        $\text{d\_pro}_i$
+        (\fref{}{162--165}).
+  \item If \texttt{no\_fusion}: directly decode each $(b_i,
+        \text{skips}_i)$, apply softplus
+        (\fref{}{170--174}).
+  \item Otherwise concatenate either
+        $[\text{bott}_i \mid \text{pose}_i]_{i=0..V-1}$ (with pose) or
+        $[\text{bott}_i]_{i=0..V-1}$ (without pose) along the channel
+        axis, mix with a $1{\times}1$ conv \texttt{fuse\_conv} that
+        compresses back to $C_b$ channels
+        (\fref{}{175--186}), then decode each view with the
+        \emph{shared} fused bottleneck and its own skip tensors
+        (\fref{}{187--189}).
+  \item Stack predictions on dim 1 $\to (B,V,1,H,W)$
+        (\fref{}{191}).
+\end{enumerate}
+
+\subsection{Weight init}
+\fref{mvp\_stereo\_model.py}{123--133}: Xavier-uniform with \texttt{gain=0.1}
+for all conv and linear weights, biases zeroed. This keeps the first-epoch
+activations small so the SiLog log doesn't explode before the network has
+moved off the random init.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Model B --- \texttt{MVStereoDINOUNet}
+(frozen DINOv2 ViT-L + DINODecoder)}
+
+\subsection{Class and constructor}
+\fref{mvp\_stereo\_dino\_model.py}{266--320}:
+
+\begin{itemize}[leftmargin=2em]
+  \item Same forward signature as \texttt{MVStereoUNet} but RGB is
+        \emph{mandatory} because DINOv2 only accepts a 3-channel image
+        (the depth branch is fed separately).
+  \item Constructor flags: \texttt{n\_views, use\_pose, pose\_ch,
+        no\_fusion, use\_plucker}.
+  \item Builds:
+    \texttt{DINOv2ViTLEncoder()} (frozen) $\to$ bottleneck channels
+    $C_b = 512$
+    (\fref{}{305--306});
+    \texttt{PoseProject} if \texttt{use\_pose}
+    (\fref{}{308--313});
+    \texttt{fuse\_conv} (only when \texttt{no\_fusion=False}) at
+    $1{\times}1$ that maps $V(C_b{+}\text{pose\_ch})$ or $V C_b$ down
+    to $C_b$
+    (\fref{}{311--314});
+    optional \texttt{PluckerEmbedder} when \texttt{use\_plucker=True}
+    (\fref{}{316--317});
+    \texttt{DINODecoder()} that outputs $(B,1,H,W)$ from a 512-ch
+    bottleneck and 256-ch skip tensors.
+\end{itemize}
+
+\subsection{Encoder details (from \texttt{\_mvp\_precompiled.pyc})}
+\texttt{DINOv2ViTLEncoder.forward(rgb, depth)} (imported at
+\fref{mvp\_stereo\_dino\_model.py}{46--49}, signature evident from
+\fref{}{350}) is, by construction matching the reference at
+\fref{simple\_stereo/model.py}{198--269}:
+
+\begin{itemize}[leftmargin=2em]
+  \item Loads \texttt{facebookresearch/dinov2/dinov2\_vitl14} via
+        \texttt{torch.hub}, freezes all 304\,M backbone parameters.
+  \item Extracts intermediate ViT tokens at blocks
+        $[5,11,17,23]$ (out of 24).
+  \item Reshapes each $(B,N,1024)$ token sequence to spatial
+        $(B,1024,h_{\text{tok}},w_{\text{tok}})$ where the patch grid
+        is at $H/14$.
+  \item Projects each level to 256 channels and bilinearly upsamples to
+        the standard UNet skip resolutions
+        ($H,\,H/2,\,H/4,\,H/8$); the deepest level is projected to 512
+        and kept at $h_{\text{tok}}$ for the bottleneck.
+  \item A trainable \texttt{DepthSideBranch} processes \texttt{d\_pro}
+        and is fused into the skip tensors --- this is how depth enters
+        a model whose backbone is RGB-only.
+\end{itemize}
+
+\subsection{Pose, fusion, output (identical recipe to CNN model)}
+\fref{mvp\_stereo\_dino\_model.py}{322--383}: the absolute 3-scalar pose
+vector and the $1{\times}1$ \texttt{fuse\_conv} work \emph{exactly} as in
+the CNN model. The only structural differences are the encoder
+(DINOv2 + side branch) and the decoder (uniform 256-ch skips). Output
+is \texttt{softplus(clamp(-20,20))} per view, stacked on dim 1.
+
+\subsection{Plücker ray embedding (optional)}
+\fref{mvp\_stereo\_dino\_model.py}{69--162}. When
+\texttt{-{}-use\_plucker} is passed, for each pixel a Plücker ray
+$(\mathbf{d},\,\mathbf{o}\times\mathbf{d})\in\mathbb{R}^6$ is built from
+$K$ (rescaled from 1920$\times$1080 to $(H,W)$,
+\fref{}{102--105}) and $T_{wc}$, then projected by two bias-free linear
+layers to 256-D (skip-additive) and 512-D (bottleneck-additive)
+embeddings
+(\fref{}{88--92,150--162}). They are added on top of the encoder
+outputs prior to fusion
+(\fref{}{352--359}). \emph{This feature is not used by any row of either
+table in the document}; it exists as an opt-in ablation.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Model C --- \texttt{StereoDepthDINOUNet}
+(Depth side branch + DINODecoder, no pretrained backbone)}
+
+\subsection{Why this row in Table~4 is valid}
+\fref{mvp\_stereo\_dino\_model.py}{169--259}. The class shares the
+\texttt{DINODecoder} with Model B but the encoder is the
+\texttt{DepthSideBranch} (\emph{not} DINOv2). All parameters --- side
+branch, four $1{\times}1$ projection convs, bottleneck conv, optional
+\texttt{fuse\_conv}, and the decoder --- are trainable; there is no
+frozen backbone. The training script counts this explicitly:
+\fref{train\_mvp\_stereo\_dino.py}{237--244}: ``all trainable --- no
+frozen backbone''.
+
+\subsection{Architecture per view}
+\fref{mvp\_stereo\_dino\_model.py}{219--230}:
+\begin{itemize}[leftmargin=2em]
+  \item \texttt{DepthSideBranch(d\_pro)} returns three feature maps
+        $s_0$:$(B,32,H,W)$, $s_1$:$(B,64,H/2,W/2)$, $s_2$:$(B,128,H/4,W/4)$.
+  \item Max-pool $s_2$ to $(B,128,H/8,W/8)$ and project to 512 channels
+        with \texttt{bott\_proj} ($1{\times}1$) for the bottleneck.
+  \item Project $s_0/s_1/s_2$ and the max-pooled $s_2$ each to 256
+        channels with \texttt{proj0/proj1/proj2/proj3} to match the
+        \texttt{DINODecoder} interface
+        (\fref{}{205--210,224--229}).
+\end{itemize}
+
+\subsection{Fusion (when enabled)}
+\fref{mvp\_stereo\_dino\_model.py}{212--214,247--257}: concatenate all
+views' 512-ch bottlenecks and pass through a single
+$1{\times}1$ \texttt{fuse\_conv} producing one shared bottleneck. Each
+view is decoded with its own skips but the shared bottleneck. With
+\texttt{-{}-no\_fusion}, the fuse conv is not built and each view is
+decoded from its own bottleneck.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Losses and Metric}
+
+\subsection{SiLog (training)}
+\fref{mvp\_stereo\_model.py}{198--230}, summed across views:
+\[
+  \mathcal{L}_{\text{SiLog}}^{(v)} =
+   \sqrt{\frac{1}{n_v}\!\!\sum d_i^2
+         - \lambda\!\left(\frac{1}{n_v}\!\!\sum d_i\right)^{\!2}},
+   \quad d_i = (\log\hat z_i - \log z_i)\,m_i,
+\]
+with $\lambda=0.85$
+(\fref{}{202}), and the mask $m_i$ is the elementwise product of the
+trunk silhouette, $z_i \in (\texttt{min\_depth},\texttt{max\_depth})$
+gating, plus a $10^{-6}$ floor to keep $\log$ finite
+(\fref{}{218--221}). The total loss is the sum over views
+(\fref{}{225}).
+
+\subsection{MV consistency (optional)}
+\fref{mvp\_stereo\_model.py}{232--336}: bidirectional GT-warp loss that,
+for each stereo pair, unprojects $\text{gt}_L$ with $K_L^{-1}$, transforms
+into the right frame via $T_R T_L^{-1}$, projects with $K_R$, samples
+$\hat z_R$ at those pixels and compares $|\log \hat z_R - \log z_R|$
+(symmetric $L\!\leftrightarrow\!R$). Validity filters:
+\begin{itemize}[leftmargin=2em]
+  \item baseline $\leq 0.80$~m (\fref{}{270--272});
+  \item source / target masks intact after warp (\fref{}{318--325});
+  \item depths within $(10^{-3},20)$~m;
+  \item at least 10 valid pixels (\fref{}{327--328}).
+\end{itemize}
+Loss is divided by the number of valid directions, then added with
+weight \texttt{-{}-lambda\_mv} after a warmup of
+\texttt{-{}-mv\_warmup\_epochs} epochs
+(\fref{train\_mvp\_stereo.py}{189--192,335--339,409}). The earlier
+ablation rows are all run with $\lambda_{\text{mv}}=0$, i.e.\ MV loss
+\emph{off}.
+
+\subsection{Masked RMSE (reporting only)}
+\fref{mvp\_stereo\_model.py}{343--361}: per-view
+$\mathrm{RMSE}_v = \sqrt{\frac{1}{|m|}\sum (\hat z - z)^2 m}$. Both the
+trainer's per-batch logging and the reported ``Val RMSE'' in the tables
+are this quantity, averaged over batches and views
+(\fref{train\_mvp\_stereo.py}{366--370,411--441}).
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Trainer Workflow}
+
+The three trainers (\texttt{train\_mvp\_stereo.py},
+\texttt{train\_mvp\_stereo\_dino.py}, \texttt{train\_pro\_depth.py}) share
+the same skeleton; line numbers below are for
+\texttt{train\_mvp\_stereo.py} with annotations of where the DINO trainer
+differs.
+
+\subsection{Determinism and isolation}
+\fref{train\_mvp\_stereo.py}{83--89}: \texttt{set\_seed} seeds Python,
+NumPy and both PyTorch CPU/CUDA RNGs, sets
+\texttt{cudnn.deterministic=True} and \texttt{cudnn.benchmark=False}.
+\fref{}{208--209}: each seed writes to its own
+\texttt{out\_dir/seed\_XX/} so the 5 seeds never overwrite each other.
+
+\subsection{W\&B import shim}
+\fref{train\_mvp\_stereo.py}{54--76}: at the parent directory the
+training scripts coexist with a local \texttt{wandb/} run-log dir, which
+Python would otherwise import as the \texttt{wandb} package. The helper
+strips any \texttt{sys.path} entry that hosts a bare \texttt{wandb/}
+without an \texttt{\_\_init\_\_.py}, then imports the real package. If
+the package is missing, training continues without logging.
+
+\subsection{Data loaders}
+\fref{train\_mvp\_stereo.py}{220--243}: if \texttt{-{}-train\_manifest} is
+absent a synthetic \texttt{\_build\_dummy\_loader}
+(\fref{}{111--129}) is substituted so the file can be smoke-tested
+without I/O. Otherwise a \texttt{TrunkStereoMVPDataset} is built for the
+train manifest, and (optionally) for the val manifest with
+\texttt{random\_swap=False}.
+\fref{train\_mvp\_stereo\_dino.py}{199--234}: same logic, except when
+\texttt{-{}-n\_views 6} the dataset class switches to
+\texttt{TrunkStereoTripletMVPDataset} (three stereo pairs).
+
+\subsection{Model construction and parameter accounting}
+\fref{train\_mvp\_stereo.py}{246--256}: \texttt{MVStereoUNet} constructed
+from the CLI flags; total parameter count printed.
+\fref{train\_mvp\_stereo\_dino.py}{237--257}: branches on
+\texttt{-{}-depth\_only}; in the DINO path it filters
+\texttt{requires\_grad=True} and prints both the total count and the
+``trainable / frozen'' split (typically $\sim$5\,M trainable, $\sim$300\,M
+frozen for the ViT-L backbone).
+
+\subsection{Optimiser, LR warmup, gradient clipping}
+\fref{train\_mvp\_stereo.py}{253}: Adam with the CLI \texttt{lr} and
+\texttt{weight\_decay}. \fref{}{259--264}: a linear warmup
+\texttt{LambdaLR} stretches the LR from $1/N$ to $1$ over the first
+\texttt{lr\_warmup\_epochs} epochs (default 5).
+\fref{}{352--353}: gradient norm clip at \texttt{-{}-grad\_clip}
+(default 1.0). The simple\_stereo trainer uses \texttt{AdamW} instead
+(\fref{simple\_stereo/train.py}{217--219}) and CUDA AMP
+(\fref{}{84--100,227}); the MVP trainers run in full precision.
+
+\subsection{Init checkpoint and corruption recovery}
+\fref{train\_mvp\_stereo.py}{399--405}: before the epoch loop the
+initial weights are snapshotted as \texttt{init\_epoch\_0000.pt} via an
+NFS-safe tmp$\to$rename. Inside \texttt{\_run\_epoch}
+(\fref{}{320--327,355--364}) three failure modes are handled:
+\begin{itemize}[leftmargin=2em]
+  \item Non-finite \texttt{d\_pred} $\Rightarrow$ reset BatchNorm
+        running statistics, zero gradients, skip batch.
+  \item Non-finite total loss $\Rightarrow$ same.
+  \item Any parameter goes non-finite \emph{after} the optimiser step
+        $\Rightarrow$ restore from \texttt{best\_ckpt} if one exists,
+        otherwise from \texttt{init\_epoch\_0000.pt}.
+\end{itemize}
+This explains why the trainers rarely crash on noisy PRO depth inputs
+even at small batch size 2.
+
+\subsection{Epoch loop}
+\fref{train\_mvp\_stereo.py}{408--491}:
+
+\begin{enumerate}[leftmargin=2em]
+  \item \texttt{mv\_active} flips on once
+        $\text{epoch} \geq \text{start} + \text{mv\_warmup\_epochs}$.
+  \item Run \texttt{\_run\_epoch(train\_dl, train=True, mv\_active)}.
+  \item Log per-view SiLog and RMSE, total loss, MV loss.
+  \item If \texttt{val\_dl} exists, run an eval epoch under
+        \texttt{torch.no\_grad()} (\fref{}{305}) and use its RMSE as
+        the \texttt{monitor} signal; else fall back to train RMSE.
+  \item \fref{}{462--474}: if \texttt{monitor} beats \texttt{best\_rmse},
+        delete the previous best and write a new
+        \texttt{best\_epoch\_NNNN.pt} atomically.
+  \item Periodic checkpoint every \texttt{save\_every} epochs when
+        $>0$.
+  \item Step the warmup scheduler.
+  \item Early stopping: \texttt{EarlyStopping(patience)}
+        (\fref{}{92--108}) tracks the monitor and breaks out when
+        \texttt{patience} epochs pass without
+        $> \min\_\text{delta}=10^{-6}$ improvement.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Mapping Each Reported Variant to a CLI Invocation}
+
+All runs use 5 seeds via a SLURM array
+(\fref{train\_mvp\_stereo.py}{20--21}); only the \texttt{-{}-seed} value
+differs across array tasks. Shared defaults:
+\texttt{-{}-H 280 -{}-W 512 -{}-batch\_size 2 -{}-epochs 80
+-{}-lr 3e-5 -{}-weight\_decay 1e-4 -{}-patience 10
+-{}-grad\_clip 1.0 -{}-lr\_warmup\_epochs 5 -{}-mv\_warmup\_epochs 2
+-{}-lambda\_mv 0 -{}-min\_depth 0.5 -{}-max\_depth 10.0}.
+
+\subsection{Earlier Stereo Refinement Ablations (\texttt{full\_spur} via remap)}
+
+\begin{center}\small
+\begin{tabular}{p{4.7cm}p{10.3cm}}
+\toprule
+\textbf{Variant} & \textbf{Command (omitting shared defaults)} \\
+\midrule
+CNN \texttt{MVStereoUNet}, RGB+depth, fusion &
+\texttt{train\_mvp\_stereo.py -{}-path\_remap full\_trunk:full\_spur} \\
+DINOv2 RGB+Depth, fusion &
+\texttt{train\_mvp\_stereo\_dino.py -{}-path\_remap full\_trunk:full\_spur} \\
+DINOv2 stereo, RGB+depth, fusion &
+same as above (this row \emph{is} the same configuration; it appears in
+the table as the labelled ``earlier config'' baseline for comparison
+with the no-fusion run below) \\
+DINOv2 stereo, RGB+depth, no fusion &
+\texttt{train\_mvp\_stereo\_dino.py -{}-no\_fusion
+-{}-path\_remap full\_trunk:full\_spur} \\
+DINOv2 RGB-only, depth zeroed, fusion &
+\texttt{train\_mvp\_stereo\_dino.py -{}-rgb\_only
+-{}-path\_remap full\_trunk:full\_spur} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \texttt{-{}-rgb\_only} row still loads PRO depth from disk but
+overwrites it with \texttt{torch.zeros\_like(d\_pro)}
+\emph{after} the loader has applied the global $\alpha,\beta$
+calibration
+(\fref{train\_mvp\_stereo\_dino.py}{325--326}); the encoder therefore
+gets a constant-zero depth side branch.
+
+\subsection{Table 4 --- Encoder and fusion ablation}
+
+\begin{center}\small
+\begin{tabular}{p{5.8cm}p{9.2cm}}
+\toprule
+\textbf{Variant} & \textbf{Command} \\
+\midrule
+CNN UNet from scratch, Depth, No fusion &
+\texttt{train\_pro\_depth.py -{}-no\_fusion} (uses
+\texttt{MVStereoUNet(use\_rgb=False, use\_pose=False, no\_fusion=True)}) \\
+CNN UNet from scratch, Depth, Yes fusion &
+\texttt{train\_pro\_depth.py} (same model with fusion enabled) \\
+DSB + DINODecoder, no pretrained backbone, Depth, No fusion &
+\texttt{train\_mvp\_stereo\_dino.py -{}-depth\_only -{}-no\_fusion}
+$\Rightarrow$ \texttt{StereoDepthDINOUNet} \\
+DSB + DINODecoder, no pretrained backbone, Depth, Yes fusion &
+\texttt{train\_mvp\_stereo\_dino.py -{}-depth\_only} \\
+Frozen DINOv2 ViT-L + DSB, RGB + Depth, Yes fusion &
+\texttt{train\_mvp\_stereo\_dino.py} (default config) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For \texttt{train\_pro\_depth.py} the default LR is $3\times10^{-4}$
+(\fref{train\_pro\_depth.py}{129}), one order of magnitude larger than
+the RGB-bearing trainers, because there is no pretrained backbone whose
+features need to be preserved and the model is shallow.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Why the ``Earlier Ablations'' Should Not Be Compared Directly
+to the \texttt{full\_trunk} Runs}
+
+Combining the discussion in \S3.2 with the model section above:
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Different data.} The manifest column names
+        \texttt{full\_trunk} paths, but the
+        \texttt{-{}-path\_remap full\_trunk:full\_spur} substitution
+        rewrites \emph{every} cell. So the earlier rows are computed
+        over the \texttt{full\_spur} crop set --- a different scene
+        region than the published \texttt{full\_trunk} DINOv2 results.
+  \item \textbf{Same calibration regardless.} Global $\alpha,\beta$ is
+        applied to PRO depth in both data sets
+        (\fref{dataset/trunk\_stereo\_mvp.py}{273}). Only
+        \texttt{-{}-rgb\_only} zeros depth out, and only in DINO models.
+  \item \textbf{Same loss, same metric.} SiLog for training, masked
+        RMSE for evaluation, identical mask gates, identical depth
+        range $[0.5, 10]$~m. So a numerical drop between
+        \texttt{full\_spur} and \texttt{full\_trunk} reflects the
+        data distribution and not a measurement change.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Quick-Reference: All CLI Flags}
+
+\subsection{\texttt{train\_mvp\_stereo.py}}
+\fref{train\_mvp\_stereo.py}{142--205}.
+\textbf{Data}:
+\texttt{-{}-train\_manifest}, \texttt{-{}-val\_manifest},
+\texttt{-{}-path\_remap OLD:NEW}, \texttt{-{}-H 280}, \texttt{-{}-W 512},
+\texttt{-{}-num\_workers 4}, \texttt{-{}-swap\_stereo}.
+\textbf{Model}: \texttt{-{}-base 64}, \texttt{-{}-pose\_ch 32},
+\texttt{-{}-no\_fusion}, \texttt{-{}-no\_rgb}, \texttt{-{}-no\_pose}.
+\textbf{Depth gate}: \texttt{-{}-min\_depth 0.5},
+\texttt{-{}-max\_depth 10.0}.
+\textbf{Training}: \texttt{-{}-epochs 80},
+\texttt{-{}-batch\_size 2}, \texttt{-{}-lr 3e-5},
+\texttt{-{}-weight\_decay 1e-4}, \texttt{-{}-seed 0}.
+\textbf{Stop / clip / warmup}: \texttt{-{}-patience 10},
+\texttt{-{}-grad\_clip 1.0}, \texttt{-{}-lr\_warmup\_epochs 5}.
+\textbf{MV loss}: \texttt{-{}-lambda\_mv 0.0},
+\texttt{-{}-mv\_warmup\_epochs 2}.
+\textbf{Checkpoint}: \texttt{-{}-out\_dir},
+\texttt{-{}-save\_every 0}, \texttt{-{}-resume}.
+\textbf{W\&B}: \texttt{-{}-wandb}, \texttt{-{}-wandb\_project},
+\texttt{-{}-wandb\_run\_name}, \texttt{-{}-wandb\_group}.
+
+\subsection{\texttt{train\_mvp\_stereo\_dino.py} (additions / changes)}
+\fref{train\_mvp\_stereo\_dino.py}{124--187}.
+\texttt{-{}-depth\_only} (use \texttt{StereoDepthDINOUNet}),
+\texttt{-{}-rgb\_only} (zero out PRO depth post-load),
+\texttt{-{}-use\_plucker} (add Plücker ray embeddings),
+\texttt{-{}-n\_views \{2,6\}} (switches dataset class),
+\texttt{-{}-no\_pose}, \texttt{-{}-no\_fusion}.
+The \texttt{-{}-no\_rgb} and \texttt{-{}-base} flags from the CNN trainer
+\emph{do not exist} here; the DINOv2 backbone is fixed.
+
+\subsection{\texttt{train\_pro\_depth.py} (additions / changes)}
+\fref{train\_pro\_depth.py}{99--150}.
+\texttt{-{}-train\_manifest} is required;
+\texttt{-{}-n\_views 2}, \texttt{-{}-base 64},
+\texttt{-{}-no\_fusion}, default \texttt{-{}-lr 3e-4}. Pose and RGB
+flags are absent (hard-coded \texttt{use\_rgb=False,
+use\_pose=False}).
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Validity Notes for Reporting}
+
+\begin{itemize}[leftmargin=2em]
+  \item \textbf{Trunk-mask validation RMSE.}
+        \fref{mvp\_stereo\_model.py}{355--360}: $|m|$ is the count of
+        pixels that are simultaneously in the trunk mask and within the
+        $[0.5,10]$~m gate. This is the metric reported in both tables;
+        nothing is averaged over background.
+  \item \textbf{``Best Val RMSE'' vs ``Final Val RMSE''.}
+        \texttt{best\_rmse} is the running minimum of the
+        validation-RMSE monitor across all epochs
+        (\fref{train\_mvp\_stereo.py}{462--474}); ``final'' is the
+        last reported epoch before either \texttt{-{}-epochs} elapses
+        or early stopping fires.
+  \item \textbf{Per-view averaging.}
+        \fref{train\_mvp\_stereo.py}{411--441}:
+        \texttt{tr\_rmse} is the unweighted mean over views; for
+        \texttt{n\_views=2} this is just the L/R mean, for
+        \texttt{n\_views=6} it is the mean over all six views.
+  \item \textbf{Depth side branch ablation (no pretrained backbone).}
+        Confirmed implementable as described
+        (\fref{mvp\_stereo\_dino\_model.py}{169--259}); the only
+        non-obvious detail is that the bottleneck channel count is
+        forced to 512 by \texttt{bott\_proj}
+        (\fref{}{209}) so the same \texttt{DINODecoder} can be reused
+        without modification.
+\end{itemize}
+
+\end{document}

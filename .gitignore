@@ -1,17 +1,31 @@
-# Python caches (but KEEP the precompiled model bytecode below)
-__pycache__/
-
-# Run outputs / logs / experiment tracking
-outputs/
-logs/
-wandb/
-
-# Data + weights (shipped separately as tar archives — see README)
-*.npy
+# Datasets and weights — must be regenerated / downloaded locally
+Data/
+da2_weights/
 *.pth
 *.pt
-*.h5
+*.npy
 
-# Editor / OS cruft
+# Training artifacts
+checkpoints/
+MVP_MODEL/checkpoints/
+logs/
+wandb/
+MVP_MODEL/wandb/
+*.wandb
+
+# Per-seed manifests (rebuilt at run time)
+manifests/spur_*/
+manifests/*_seed*/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+.ipynb_checkpoints/
+
+# Editor / OS
+.vscode/
+.idea/
 .DS_Store
 *.swp

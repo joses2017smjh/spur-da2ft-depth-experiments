@@ -63,6 +63,7 @@ _DEPTH_SUBDIR_GT  = os.sep + "depth"      + os.sep
 # Da2Finetune/) without touching the manifests. Defaults to pro_refine so all
 # existing experiments are unchanged.
 _DEPTH_SUBDIR_PRO = os.sep + os.environ.get("INPUT_DEPTH_SUBDIR", "pro_refine") + os.sep
+_INPUT_DEPTH_INTERP = os.environ.get("INPUT_DEPTH_INTERP", "bilinear")  # "nearest" avoids trunk/bg edge-averaging (bad pixels)
 
 # PRO depth calibration — from Baseline_Model/eval/benchmark_summary.json
 # pro.best_config: global fit, erode_r=10, min_gt_std=0.05, fit_space=depth
@@ -303,7 +304,10 @@ class TrunkStereoMVPDataset(Dataset):
             return torch.full((1, self.H, self.W), _PRO_BETA, dtype=torch.float32)
 
         t = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0)
-        t = F.interpolate(t, size=(self.H, self.W), mode="bilinear", align_corners=False)
+        if _INPUT_DEPTH_INTERP == "nearest":
+            t = F.interpolate(t, size=(self.H, self.W), mode="nearest")
+        else:
+            t = F.interpolate(t, size=(self.H, self.W), mode="bilinear", align_corners=False)
         t = t.squeeze(0)   # (1, H, W)
 
         if self.pro_calib:
