@@ -1,10 +1,8 @@
 # spur-da2ft-depth-experiments
 
 Vision-based **metric depth estimation for robotic apple-tree pruning**.
-This repository contains the synthetic-data pipeline, Depth Anything V2
-fine-tuning code, and stereo / multi-view refinement ablations
-(CNN U-Net and DINOv2 + depth-side branch) described in the accompanying
-CVPR-style report.
+Synthetic-data pipeline, Depth Anything V2 fine-tuning code, and stereo /
+multi-view refinement ablations (CNN U-Net and DINOv2 + depth-side branch).
 
 ### Built With
 
@@ -17,16 +15,18 @@ CVPR-style report.
 ## 📑 Table of Contents
 
 - [Project Identity](#-project-identity)
-- [Value Proposition](#-value-proposition)
-- [Core Features and Benefits](#core-features-and-benefits)
-- [Access and Usage](#-access-and-usage)
+- [Problem & Application](#-problem--application)
+- [Setup](#-setup)
+- [Models & Weights](#-models--weights)
 - [Generating the Dataset](#-generating-the-dataset)
-- [Running the Experiments](#-running-the-experiments)
-- [Hardware Constraints](#-hardware-constraints)
-- [Architecture](#architecture)
-- [Repository Layout](#repository-layout)
-- [Scripts](#scripts)
-- [Development Challenges and Solutions](#development-challenges-and-solutions)
+- [Running an Experiment](#%EF%B8%8F-running-an-experiment)
+- [Architecture](#-architecture)
+  - [Single-Image DA2 Fine-Tune](#single-image-da2-fine-tune)
+  - [CNN Stereo U-Net (`MVStereoUNet`)](#cnn-stereo-u-net-mvstereounet)
+  - [DINOv2 + Depth-Side Branch (`MVStereoDINOUNet`)](#dinov2--depth-side-branch-mvstereodinounet)
+- [Code Organization](#-code-organization)
+- [Results](#-results)
+- [Hardware Constraints](#%EF%B8%8F-hardware-constraints)
 - [Developer References](#developer-references)
 - [Contact](#contact)
 
@@ -34,71 +34,31 @@ CVPR-style report.
 
 ## 📌 Project Identity
 
-### Active Team & Roles
-- **Jose Sanchez** — Sole contributor (Oregon State University)
+- **Author:** Jose Sanchez — Oregon State University
+- **Status:** report + reproducible release, Jun 2026
 
-### Timeline / Status
-- **Jan – Mar 2026**: Synthetic data pipeline + zero-shot baselines ✅
-- **Mar – May 2026**: DA2 fine-tune + box-anchor loss study ✅
-- **May – Jun 2026**: Stereo / multi-view refinement (CNN + DINOv2) ✅
-- **Jun 2026**: Report + reproducible release 📝 *(current)*
+## 🌟 Problem & Application
 
-## 🌟 Value Proposition
+Robotic pruning of dormant apple trees needs **metric depth at the trunk pixel**
+so a cutting tool can be positioned to within a few centimeters. Real depth
+sensors are sparse and noisy in outdoor orchards; off-the-shelf monocular
+models drift in scale. We use **synthetic Blender renders** (RGB + dense GT
+depth + trunk/box masks + camera intrinsics + 6-DoF pose) of 100 Envy/UFO
+trees with four bark textures as a controlled test bed for three strategies:
+zero-shot + α/β calibration, **fine-tuned Depth Anything V2**, and **stereo
+RGB-D refinement** with either a from-scratch CNN U-Net or a frozen DINOv2
+ViT-L paired with a trainable depth-side branch.
 
-### Problem Statement
-Robotic pruning of dormant apple trees requires per-pixel metric depth on
-**thin branches against cluttered backgrounds**, a regime where real depth
-sensors return sparse, noisy data and off-the-shelf monocular models drift
-in scale. This project asks: *given limited real-world data, where does the
-biggest accuracy gain come from — post-hoc calibration, targeted synthetic
-fine-tuning, or stereo / multi-view refinement?*
+**Headline finding** — targeted synthetic fine-tuning beats both zero-shot
+calibration and stereo refinement alone. Pretrained RGB encoders only help
+refinement when the input depth is already metric (i.e., already from the
+fine-tuned DA2 model). For real-time pruning, single-view DA2 fine-tune at
+~80 ms/frame is the practical pick (~0.0598 m trunk RMSE); 3-pair DINO
+refinement gets the lowest error (**0.0445 m**) at ~80 ms/view across 6
+views.
 
-### Target Audience
+## 📘 Setup
 
-| Audience       | Needs                                                   |
-| ---            | ---                                                     |
-| Robotics teams | Metric depth on tree structure for arm/end-effector planning |
-| Researchers    | Reproducible ablation of calibration vs. fine-tune vs. refinement |
-| Agri-vision    | Synthetic orchard data pipeline with full pose + GT depth |
-| Students       | Working end-to-end depth pipeline (Blender → train → eval) |
-
-### Core Features and Benefits
-
-#### 1. Synthetic Orchard Generator (Blender 4.2.13)
-A scripted pipeline produces RGB, ground-truth depth, segmentation masks,
-camera intrinsics, and poses for 100 Envy/UFO tree models with four bark
-textures and configurable camera rigs (trunk-only, box-anchor, stereo, multi-view).
-
-#### 2. Calibration + Preprocessing Sweep
-Global linear α/β alignment of DA3 Metric / DA3 Relative / PatchRefineOnce
-(PRO) outputs with a winsor × erosion × min-std × fit-space sweep, plus a
-**box-anchor** strategy that uses a fixed known object as a metric reference.
-
-#### 3. Depth Anything V2 Fine-Tune
-Trunk-masked SiLog fine-tune (single image) with four box-loss variants
-(union / weighted / balanced / anchor) that include the box pixels at
-different weights.
-
-#### 4. Stereo & Multi-View Refinement
-- **Shared CNN stereo U-Net** (`MVStereoUNet`) — baseline RGB+D refiner.
-- **DINOv2 (frozen) + Depth-Side Branch** (`MVStereoDINOUNet`) — pretrained
-  RGB encoder paired with a trainable depth pathway and learned 1×1
-  cross-view fusion at the bottleneck.
-
-#### 5. Reproducible Ablation Harness
-A consistent 10-tree / 80-20 split / 5-seed / 80-epoch / patience-10 protocol
-runs on every encoder × input × depth source × fusion combination via
-`run_spur_*.sh` scripts.
-
-## 📘 Access and Usage
-
-### Prerequisites
-1. **Python 3.10** (we ship a `requirements.txt`).
-2. **CUDA GPU with ≥24 GB VRAM** for ViT-L training (see [hardware](#-hardware-constraints)).
-3. **Blender 4.2.13** for synthetic data generation (only needed if regenerating).
-4. **Conda / Miniforge** for the Python environment.
-
-### Environment Setup
 ```bash
 git clone https://github.com/joses2017smjh/spur-da2ft-depth-experiments.git
 cd spur-da2ft-depth-experiments
@@ -108,68 +68,67 @@ conda activate spur
 pip install -r requirements.txt
 ```
 
-Place the **Depth Anything V2 ViT-L** pretrained weights at:
-```
-da2_weights/depth_anything_v2_vitl.pth
-```
-(Download from the official DA2 release.)
+## 🔽 Models & Weights
 
-### Configuration
-Top-level paths and flags are exposed in each `run_spur_*.sh`:
+| Weight                                     | Source                                                  | Place under |
+| ---                                        | ---                                                     | --- |
+| **Depth Anything V2 ViT-L** (pretrained)   | <https://github.com/DepthAnything/Depth-Anything-V2>     | `da2_weights/depth_anything_v2_vitl.pth` |
+| **DINOv2 ViT-L**                           | auto-downloaded by torch hub on first run               | `~/.cache/torch/hub/` |
+| **PatchRefineOnce (PRO)**                  | <https://github.com/inkyu-kwon/PatchRefineOnce>          | `pretrained/PRO/PRO.pth` |
+| **DA2 fine-tuned (ours)** — optional       | release page (see GitHub Releases)                      | `checkpoints/da2_metric/best.pth` |
+
+Quick download example:
+
 ```bash
-# Dataset selection
-export DATASET=full_trunk          # or full_spur
-# Input depth source for refiners
-export INPUT_DEPTH_SUBDIR=Da2Finetune   # or pro_refine
+mkdir -p da2_weights
+wget -O da2_weights/depth_anything_v2_vitl.pth \
+  https://huggingface.co/depth-anything/Depth-Anything-V2-Large/resolve/main/depth_anything_v2_vitl.pth
 ```
 
 ## 🌳 Generating the Dataset
 
-### Required Assets
-The Blender pipeline needs three things on disk:
+Required assets (shipped in this repo unless noted):
 
-| Asset                  | Where                              | Source |
-| ---                    | ---                                | --- |
-| Blender scene          | `orchard_template.blend`           | shipped in repo |
-| Per-tree geometry      | `trees/ply/lpy_envy_*.ply`         | provided in repo |
-| Per-tree metadata JSON | `trees/metadata/lpy_envy_*_metadata.json` | cylinder info (radius, centroid, trunk/branch/spur tag) |
-| Bark textures          | `textures/<bark_name>/<bark_name>_diff_4k.jpg` and `_nor_gl_4k.exr` | 4 textures: `bark_brown`, `bark_brown_02`, `bark_willow`, `bark_willow_02` |
+| Asset                  | Location                              |
+| ---                    | ---                                   |
+| Blender scene          | `orchard_template.blend`              |
+| Tree geometry (.ply)   | `trees/ply/lpy_envy_*.ply`            |
+| Tree metadata (JSON)   | `trees/metadata/lpy_envy_*_metadata.json` |
+| Bark textures (4)      | `textures/bark_{brown,brown_02,willow,willow_02}/` (`_diff_4k.jpg` + `_nor_gl_4k.exr`) |
 
-### Key Flags in `Dataloader/generate_tree2.py`
+**Renderer entry point:** [`Dataloader/generate_tree2.py`](Dataloader/generate_tree2.py). Driven entirely by env vars + a few hard-coded constants:
 
-| Knob | Default | What it does |
-| --- | --- | --- |
-| `BARK_NAME`             | env | Which bark texture set to apply (`bark_brown_02`, etc.). |
-| `TREE_ID`               | env | Which `lpy_envy_*` to render. |
-| `CV_OUTPUT_DIR`         | env | Output root; produces `rgb/`, `depth/`, `mask/`, `Optical_flow/`, `ann/`, `box_mask/`. |
-| `CV_FORCE_RENDER=1`     | env | Re-render even if outputs already exist. |
-| `process_res`           | 504 | Internal depth processing resolution. |
-| `TEXTURES_DIR`          | const | Directory of bark textures. |
-| `RENDER_BOX = True`     | const | Adds the fixed box anchor (~30 cm in front of camera, 15×7 cm). |
-| `SHOTS`                 | const | Six fixed camera poses per (tree, set_id). |
-| `SET_IDS`               | const | `box`, `box_cam1..8`, `cam1..10`. |
+| Knob                | Type         | Effect |
+| ---                 | ---          | --- |
+| `BARK_NAME`         | env          | Texture set to apply (`bark_brown_02`, …). |
+| `TREE_ID`           | env          | Which `lpy_envy_*` model. |
+| `CV_OUTPUT_DIR`     | env          | Output root (creates `rgb/`, `depth/`, `mask/`, `Optical_flow/`, `ann/`, `box_mask/`). |
+| `CV_FORCE_RENDER=1` | env          | Re-render even if outputs exist. |
+| `RENDER_BOX`        | const (True) | Add the fixed ~30 cm box anchor (~15 × 7 cm). |
+| `SHOTS`             | const        | Six fixed camera poses per (tree, set_id). |
+| `SET_IDS`           | const        | `box`, `box_cam1..8`, `cam1..10`. |
+| `process_res`       | const (504)  | Internal processing resolution. |
 
-### Workflow
+Smoke test:
+
 ```bash
-# 1. Render one tree × one texture (smoke test)
-BARK_NAME=bark_brown_02 \
-TREE_ID=lpy_envy_00001 \
-CV_OUTPUT_DIR=./Data/full_spur \
-CV_FORCE_RENDER=1 \
+BARK_NAME=bark_brown_02 TREE_ID=lpy_envy_00001 \
+CV_OUTPUT_DIR=./Data/full_spur CV_FORCE_RENDER=1 \
 blender -b orchard_template.blend -P Dataloader/generate_tree2.py
+```
 
-# 2. Render all 100 trees in a texture
+Full sweep (100 trees × 1 texture):
+
+```bash
 for i in $(seq -f "%05g" 0 99); do
   BARK_NAME=bark_brown_02 TREE_ID=lpy_envy_$i \
   CV_OUTPUT_DIR=./Data/full_spur \
   blender -b orchard_template.blend -P Dataloader/generate_tree2.py
 done
-
-# 3. Generate PRO depth maps (input for refiners)
-bash run_pro_fullspur.sh
 ```
 
 Output layout:
+
 ```
 Data/<dataset>/
   rgb/<bark>/<tree>/<set_id>/<tree>_<shot>.png
@@ -181,152 +140,204 @@ Data/<dataset>/
   Da2Finetune/...     (after DA2 inference)
 ```
 
-## ▶️ Running the Experiments
+## ▶️ Running an Experiment
 
-Each experiment is a `run_spur_*.sh` script that builds a per-seed manifest
-and launches `train_depth_da2.py` (single-image) or
-`MVP_MODEL/train_mvp_stereo{,_dino}.py` (refiner). Shared protocol: 10 trees,
-8/2 split, 5 seeds (array tasks), 80 epochs, patience 10, no pose,
-nearest-GT loader.
+Example: **DINOv2 RGB+D refiner, 3 stereo pairs, DA2-fine-tuned input
+depth, fusion ON, no pose** (our best configuration → 0.0445 m RMSE).
 
-| Experiment family | Script |
-| --- | --- |
-| DA2 box-anchor loss (A/B/C/D) | `run_spur_boxlr_{A_union,B_weighted,C_balanced,D_anchor}.sh` |
-| DA2 view-diversity | `run_spur_da2_{halfhalf,boxfam,camonly}_nomv_seeds.sh` |
-| DINO RGB / RGB+D refiner ablations | `run_spur_dino_*_seeds.sh` |
-| CNN refiner ablations | `run_spur_cnn_*_seeds.sh` |
-| Multi-pair sweep | `run_spur_dino_da2ft_{2,3,4}pair_fusion_nopose.sh` |
-
-Local (no SLURM):
 ```bash
-SLURM_ARRAY_TASK_ID=1 bash run_spur_dino_da2ft_1pair_fusion_nopose_dgx2.sh
+# (1) Generate DA2-fine-tune depth for the frames the refiner will see.
+#     Reads frame list, runs the fine-tuned DA2 model, writes to Da2Finetune/.
+python scripts/infer_da2_finetune_batch.py \
+  --frame-list   manifests/da2finetune_frames.txt \
+  --ckpt         checkpoints/da2_metric/best.pth \
+  --da2-root     depth-anything-v2/metric_depth \
+  --max-depth    20.0
+
+# (2) Launch the refiner for one seed (single GPU, no SLURM).
+SLURM_ARRAY_TASK_ID=1 \
+DATASET=full_spur \
+INPUT_DEPTH_SUBDIR=Da2Finetune \
+bash run_spur_dino_da2ft_3pair_fusion_dgx2.sh
+
+# (3) Watch the log.
+tail -f logs/spur_dino_da2ft_3pair_fusion_nopose-*.out
 ```
+
+What you'll see:
+
+- per-epoch `train RMSE` / `val RMSE` / `loss`
+- `best.pth` saved when val RMSE improves
+- `Best checkpoint:` line at the end with the path
+
+To switch to another experiment, just point at a different launcher:
+
+| What changes | Knob | Example |
+| --- | --- | --- |
+| Refiner backbone     | script             | `run_spur_cnn_da2ft_*` (CNN) vs `run_spur_dino_da2ft_*` (DINO) |
+| # stereo pairs       | script suffix      | `…_1pair_…` / `…_2pair_…` / `…_3pair_…` / `…_4pair_…` |
+| Input depth source   | `INPUT_DEPTH_SUBDIR` env | `pro_refine` (raw PRO) / `Da2Finetune` (ours) |
+| α/β calibration      | `--no_pro_calib` flag in script | present → off, absent → on |
+| Cross-view fusion    | `--no_fusion` flag in script    | present → off |
+| Pose input           | `--no_pose` flag in script      | present → off |
+| Dataset              | `DATASET` env       | `full_trunk` / `full_spur` |
+
+## 🧠 Architecture
+
+Three-stage pipeline. Stage 1 generates synthetic RGB + GT depth in Blender.
+Stage 2 fine-tunes a monocular foundation model (DA2). Stage 3 refines that
+prediction with multi-view RGB + D.
+
+### Single-Image DA2 Fine-Tune
+
+[`train_depth_da2.py`](train_depth_da2.py) + [`dataset/trunk_da2.py`](dataset/trunk_da2.py).
+DA2 ViT-L (~308 M params) is loaded from `--pretrained-from` and fine-tuned
+end-to-end on synthetic RGB → metric depth. Loss is **SiLog over trunk-mask
+pixels**, with four optional box-anchor variants (`--box-loss-mode` in
+`{union, weighted, balanced, anchor}`) that mix in the fixed box-anchor
+pixels. Validation: trunk-mask RMSE in meters.
+
+Key flags ([`train_depth_da2.py`](train_depth_da2.py)):
+
+```
+--encoder vitl              # DA2 backbone variant
+--pretrained-from PATH      # DA2 weights
+--train-manifest CSV        # per-seed training manifest
+--val-manifest   CSV
+--epochs 80                 # patience-10 early stop in launchers
+--lr 5e-6                   # ~5×10⁻⁶ baseline
+--train-box-mask            # enable box pixels in loss
+--box-loss-mode {union,weighted,balanced,anchor}
+--max-runtime-seconds N     # wall-clock budget (graceful exit)
+```
+
+### CNN Stereo U-Net (`MVStereoUNet`)
+
+[`MVP_MODEL/mvp_stereo_model.py`](MVP_MODEL/mvp_stereo_model.py) +
+[`MVP_MODEL/train_mvp_stereo.py`](MVP_MODEL/train_mvp_stereo.py). Shared
+encoder–decoder trained from scratch. Each view is encoded with the same
+weights, the bottlenecks are concatenated along channels, a learned 1×1
+convolution fuses them, and the decoder predicts refined depth per view.
+
+<p align="center">
+  <img src="docs/arch_cnn_unet.jpg" alt="Shared CNN stereo U-Net architecture" width="780"/>
+</p>
+
+- **Input:** RGB+D channel-concatenated per view (or D-only via `--no_rgb`).
+- **Cross-view fusion:** 1×1 Conv over `n_views × C` → `C` at the bottleneck (off via `--no_fusion`).
+- **Output head:** `softplus` (`pred_mode=absolute`) or residual on input depth (`bounded_residual` / `adaptive_residual`).
+- **Pose:** 3-scalar pose embedding (Δz, Δθz, Δr) injected into bottleneck (off via `--no_pose`).
+
+### DINOv2 + Depth-Side Branch (`MVStereoDINOUNet`)
+
+[`MVP_MODEL/mvp_stereo_dino_model.py`](MVP_MODEL/mvp_stereo_dino_model.py) +
+[`MVP_MODEL/train_mvp_stereo_dino.py`](MVP_MODEL/train_mvp_stereo_dino.py).
+Same multi-view recipe, but RGB and D are encoded by **two separate
+streams**. RGB goes through a **frozen DINOv2 ViT-L** (provides pretrained
+features), depth goes through a trainable CNN side-branch. The two streams
+are merged via skip-connection projections + a bottleneck fuse.
+
+<p align="center">
+  <img src="docs/arch_dino_dsb.jpg" alt="DINOv2 RGB-D refinement architecture" width="780"/>
+</p>
+
+- **Backbone:** frozen DINOv2 ViT-L (`encoder.dino`), ~300 M frozen params + ~5 M trainable.
+- **Depth branch:** `DepthSideBranch` (CNN) produces multi-scale features fused into the DINO skip path.
+- **Cross-view fusion:** same 1×1 conv at the bottleneck.
+- **Pair counts:** `--n_views 2/4/6/8` (single / 2 / 3 / 4 stereo pairs).
+- **Optional partial fine-tune:** `--unfreeze_last_n N` or LoRA via `--lora_rank R` (off by default).
+- **Pluecker rays:** `--use_plucker` injects per-pixel camera rays at skip + bottleneck (off by default).
+
+## 🗂️ Code Organization
+
+| Concern | File |
+| --- | --- |
+| Blender rendering           | [`Dataloader/generate_tree2.py`](Dataloader/generate_tree2.py) |
+| DA2 fine-tune trainer       | [`train_depth_da2.py`](train_depth_da2.py) |
+| DA2 single-image loader     | [`dataset/trunk_da2.py`](dataset/trunk_da2.py) |
+| 1-pair stereo loader        | [`dataset/trunk_stereo_mvp.py`](dataset/trunk_stereo_mvp.py) |
+| 2-pair stereo loader        | [`dataset/trunk_stereo_pair_mvp.py`](dataset/trunk_stereo_pair_mvp.py) |
+| 3-pair stereo loader        | [`dataset/trunk_stereo_triplet_mvp.py`](dataset/trunk_stereo_triplet_mvp.py) |
+| 4-pair stereo loader        | [`dataset/trunk_stereo_quad_mvp.py`](dataset/trunk_stereo_quad_mvp.py) |
+| CNN refiner model           | [`MVP_MODEL/mvp_stereo_model.py`](MVP_MODEL/mvp_stereo_model.py) |
+| DINO refiner model          | [`MVP_MODEL/mvp_stereo_dino_model.py`](MVP_MODEL/mvp_stereo_dino_model.py) |
+| CNN refiner trainer         | [`MVP_MODEL/train_mvp_stereo.py`](MVP_MODEL/train_mvp_stereo.py) |
+| DINO refiner trainer        | [`MVP_MODEL/train_mvp_stereo_dino.py`](MVP_MODEL/train_mvp_stereo_dino.py) |
+| DA2 batch inference         | [`scripts/infer_da2_finetune_batch.py`](scripts/infer_da2_finetune_batch.py) |
+| Canonical 80/20 manifests   | [`manifests/source/stereo_{train,val}_manifest.csv`](manifests/source/) |
+| Experiment launchers        | `run_spur_*.sh` (top level) |
+
+Common knobs you'll want to edit:
+
+| Goal                                | Where                                                                 |
+| ---                                 | ---                                                                   |
+| Change input depth source           | `INPUT_DEPTH_SUBDIR` env (read in stereo loaders, e.g. `dataset/trunk_stereo_mvp.py:_DEPTH_SUBDIR_PRO`) |
+| Disable α/β PRO calibration         | `--no_pro_calib` flag in any launcher                                 |
+| Disable cross-view fusion           | `--no_fusion` flag in any DINO/CNN launcher                           |
+| Disable pose embedding              | `--no_pose` flag in any DINO/CNN launcher                             |
+| Change # stereo pairs               | `--n_views {2,4,6,8}` (DINO) or pick a different `_Npair_` launcher    |
+| Change box-loss formulation         | `--box-loss-mode {union,weighted,balanced,anchor}` in `run_spur_boxlr_*.sh` |
+| Swap dataset                        | `DATASET=full_trunk` or `full_spur`                                    |
+
+## 📊 Results
+
+All numbers are validation RMSE in meters on synthetic Envy/UFO trees,
+single bark texture, 10 trees / 5 seeds / 80 epochs / patience 10.
+
+| Method                                    | RMSE (m)              | Notes |
+| ---                                       | ---                   | --- |
+| DA2-ft single-view (trunk mask)           | $0.0598$              | trunk-only eval |
+| DA2-ft single-view (full-tree)            | $0.0550$              | full-tree eval |
+| **CNN RGB+D refinement**                  | $0.0503 \pm 0.0090$   | DA2-ft input, 4 stereo pairs |
+| **DINO RGB+D refinement (best overall)**  | $\mathbf{0.0445 \pm 0.0057}$ | DA2-ft input, 3 stereo pairs |
+| SPUR anchor loss (D)                      | $0.1136 \pm 0.0097$   | box as scale anchor only |
+
+Cross-cutting observations:
+
+- **Depth source dominates architecture.** Both refiners drop from
+  ~0.10 m → ~0.05 m when the input depth is swapped from raw PRO to
+  fine-tuned DA2.
+- **Pretrained RGB only helps with good depth.** DINOv2 beats the CNN only
+  when the input depth is DA2-fine-tuned; on raw PRO the CNN actually wins
+  by ~24 %.
+- **α/β calibration ≈ no-op for the refiners** when the encoder is strong
+  enough to learn the scale internally.
+- **Cross-view fusion** helps the CNN modestly (~5 %); for DINO it is
+  essentially a no-op.
+- **More views ≠ better.** DINO peaks at 3 pairs; CNN at 4 pairs; gains
+  beyond 1 pair are within ±1 σ for DINO.
+
+**For deployment** the practical pick is the single-view DA2 fine-tune at
+~80 ms/frame (trunk RMSE ~0.060 m). The 3-pair DINO refiner buys ~0.015 m
+of accuracy for ~6× the compute (6-view group ≈ 485 ms total) — useful for
+offline planning, expensive for real-time pruning.
 
 ## 🖥️ Hardware Constraints
 
-| Stage | Minimum | Recommended |
-| --- | --- | --- |
-| **Blender render** (per tree) | 16 GB RAM, any CUDA GPU (8 GB) | 32 GB RAM, RTX 3060+ |
-| **PRO / DA2 inference** | 12 GB VRAM | 24 GB+ VRAM |
-| **DA2 fine-tune (ViT-L, bs=2)** | **24 GB VRAM** | A40 / A100 / H100 / V100-32GB |
-| **CNN stereo refiner (1 pair)** | 12 GB VRAM | 24 GB |
-| **DINO refiner (1 pair, frozen ViT-L)** | 16 GB VRAM | 24 GB+ |
-| **DINO refiner (3–4 pair)** | 24 GB VRAM | 40 GB+ (A100 / H100) |
-| **Disk for full dataset** | — | ~250 GB |
-| **CPU / RAM during training** | 8 cores, 32 GB | 16 cores, 64 GB |
+| Stage                                       | Minimum                       | Recommended                    |
+| ---                                         | ---                           | ---                            |
+| Blender render (per tree)                   | 16 GB RAM, any CUDA GPU (8 GB)| 32 GB RAM, RTX 3060+           |
+| PRO / DA2 inference                         | 12 GB VRAM                    | 24 GB+ VRAM                    |
+| **DA2 fine-tune** (ViT-L, bs=2)             | **24 GB VRAM**                | A40 / A100 / H100 / V100-32 GB |
+| CNN stereo refiner (1 pair)                 | 12 GB VRAM                    | 24 GB                          |
+| DINO refiner (1 pair, frozen ViT-L)         | 16 GB VRAM                    | 24 GB+                         |
+| DINO refiner (3–4 pair)                     | 24 GB VRAM                    | 40 GB+ (A100 / H100)           |
+| Disk for full dataset                       | —                             | ~250 GB                        |
+| CPU / RAM during training                   | 8 cores, 32 GB                | 16 cores, 64 GB                |
 
-Floor for a single-GPU personal computer: an **RTX 3090/4090 (24 GB)** can
-run every experiment in this repo at `bs=2, H=280, W=512`, just slower than
-the cluster (~2–4× wall-time vs. A40). Anything with **<16 GB VRAM** will
-need reduced batch size, smaller image size, or to skip DA2 fine-tune and
-use a released checkpoint.
-
-## Architecture
-
-```
-+---------------------+      +-----------------------+      +-------------------+
-|  Blender Renderer   | ---> |   Synthetic Dataset   | ---> | PRO / DA2 Predictor|
-|  generate_tree2.py  |      |  rgb / depth / mask / |      |   (preprocess)    |
-+---------------------+      |  Optical_flow / ann   |      +-------------------+
-                             +-----------------------+                |
-                                       |                              v
-                                       v                  +-------------------+
-                             +-----------------------+    |  Calibration Sweep|
-                             |  Single-Image FT (DA2)|    |  (α/β + preproc)  |
-                             +-----------------------+    +-------------------+
-                                       |
-                                       v
-                             +-----------------------+      +-------------------+
-                             |  Stereo / Multi-View  |<---->|  Loader override  |
-                             |  Refiner (CNN / DINO) |      |  INPUT_DEPTH_SUBDIR|
-                             +-----------------------+      +-------------------+
-```
-
-## Repository Layout
-
-```
-spur-da2ft-depth-experiments/
-├── README.md
-├── requirements.txt
-├── orchard_template.blend          # Blender scene
-├── Dataloader/
-│   ├── generate_tree2.py
-│   ├── move_camera.py
-│   └── exr_to_npy.py
-├── trees/
-│   ├── ply/        lpy_envy_*.ply
-│   └── metadata/   lpy_envy_*_metadata.json
-├── textures/
-│   ├── bark_brown_02/
-│   ├── bark_willow_02/
-│   ├── bark_brown/
-│   └── bark_willow/
-├── da2_weights/                    # user provides depth_anything_v2_vitl.pth
-├── depth-anything-v2/              # vendored DA2 metric_depth code
-├── dataset/                        # PyTorch datasets
-│   ├── trunk_da2.py
-│   ├── trunk_stereo_mvp.py
-│   ├── trunk_stereo_pair_mvp.py
-│   ├── trunk_stereo_triplet_mvp.py
-│   └── trunk_stereo_quad_mvp.py
-├── MVP_MODEL/
-│   ├── mvp_stereo_model.py         # MVStereoUNet (CNN)
-│   ├── mvp_stereo_dino_model.py    # MVStereoDINOUNet (frozen DINOv2 + DSB)
-│   ├── train_mvp_stereo.py
-│   └── train_mvp_stereo_dino.py
-├── train_depth_da2.py              # DA2 single-image fine-tune
-├── run_spur_*.sh                   # all experiment launchers
-└── manifests/source/               # canonical 80/20 stereo manifests
-    ├── stereo_train_manifest.csv
-    └── stereo_val_manifest.csv
-```
-
-## Scripts
-
-| Path | Purpose |
-| --- | --- |
-| `run_spur_boxlr_*.sh`              | DA2 box-anchor loss (A/B/C/D) ablation |
-| `run_spur_da2_*.sh`                | DA2 view-diversity (data composition) |
-| `run_spur_cnn_*.sh`                | CNN refiner ablations |
-| `run_spur_dino_*.sh`               | DINO refiner ablations |
-
-## Development Challenges and Solutions
-
-**Dataset reorganization drift.** Cached manifests referenced trees that were
-later moved/deleted. **Solution:** scripts guard manifest reuse with an
-existence check; running with deleted-tree state requires
-`rm -rf manifests/<variant>_seed*` to force rebuild.
-
-**Bilinear GT-resize bleed.** The stereo loader's `_load_depth` originally
-used `mode="bilinear"`, which averaged 2 m trunk pixels with the (zeroed)
-background sentinel at silhouettes — corrupting ~5 % of trunk-mask edge
-pixels and inflating masked RMSE ~20×. **Solution:** switched GT resize to
-`nearest`; verified 0 % >10 m pixels in masked region.
-
-**Pose ↔ fusion coupling.** `MVStereoDINOUNet` ties
-`use_pose = use_pose and not no_fusion` because pose is injected at the
-cross-view bottleneck. **Solution:** documented the coupling; pose-OFF runs
-were re-launched with both `--no_pose` and explicit fusion choice.
-
-**Multi-pair dataset for CNN.** The CNN trainer originally required indexed
-columns for multi-pair. **Solution:** extended `train_mvp_stereo.py` to use
-the nearest-neighbour Pair/Triplet/Quad datasets the DINO trainer already
-uses.
+Single-GPU desktop floor: **RTX 3090 / 4090 (24 GB)** runs every experiment
+at `bs=2, H=280, W=512`, ~2–4× slower than the cluster. <16 GB VRAM cards
+need reduced batch / resolution or the released `best.pth` instead of
+re-training.
 
 ## Developer References
 
-- **Depth Anything V2** — Yang et al., 2024.
-  <https://github.com/DepthAnything/Depth-Anything-V2>
-- **Depth Anything V3** — Lin et al., 2025.
-  <https://github.com/depth-anything/Depth-Anything-V3>
-- **PatchRefineOnce (PRO)** — Kwon et al., 2025.
-  <https://github.com/inkyu-kwon/PatchRefineOnce>
-- **DINOv2** — Oquab et al., 2023.
-  <https://github.com/facebookresearch/dinov2>
-- **U-Net** — Ronneberger et al., 2015.
-  <https://arxiv.org/abs/1505.04597>
-- **TilingZoeDepth** — Bill F. Smith.
-  <https://github.com/BillFSmith/TilingZoeDepth>
+- **Depth Anything V2** — Yang et al., 2024. <https://github.com/DepthAnything/Depth-Anything-V2>
+- **Depth Anything V3** — Lin et al., 2025. <https://github.com/depth-anything/Depth-Anything-V3>
+- **PatchRefineOnce (PRO)** — Kwon et al., 2025. <https://github.com/inkyu-kwon/PatchRefineOnce>
+- **DINOv2** — Oquab et al., 2023. <https://github.com/facebookresearch/dinov2>
+- **U-Net** — Ronneberger et al., 2015. <https://arxiv.org/abs/1505.04597>
+- **TilingZoeDepth** — Bill F. Smith. <https://github.com/BillFSmith/TilingZoeDepth>
 
 ## Contact
 
