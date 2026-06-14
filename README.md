@@ -1,4 +1,4 @@
-# spur-da2ft-depth-experiments
+# Vision-Based Metric Depth Estimation for Robotic Pruning
 
 Vision-based **metric depth estimation for robotic apple-tree pruning**.
 Synthetic-data pipeline, Depth Anything V2 fine-tuning code, and stereo /
