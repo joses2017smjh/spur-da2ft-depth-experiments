@@ -158,7 +158,7 @@ python scripts/infer_da2_finetune_batch.py \
 SLURM_ARRAY_TASK_ID=1 \
 DATASET=full_spur \
 INPUT_DEPTH_SUBDIR=Da2Finetune \
-bash run_spur_dino_da2ft_3pair_fusion_dgx2.sh
+bash scripts/run_spur_dino_da2ft_3pair_fusion_dgx2.sh
 
 # (3) Watch the log.
 tail -f logs/spur_dino_da2ft_3pair_fusion_nopose-*.out
@@ -174,7 +174,7 @@ To switch to another experiment, just point at a different launcher:
 
 | What changes | Knob | Example |
 | --- | --- | --- |
-| Refiner backbone     | script             | `run_spur_cnn_da2ft_*` (CNN) vs `run_spur_dino_da2ft_*` (DINO) |
+| Refiner backbone     | script             | `scripts/run_spur_cnn_da2ft_*` (CNN) vs `scripts/run_spur_dino_da2ft_*` (DINO) |
 | # stereo pairs       | script suffix      | `…_1pair_…` / `…_2pair_…` / `…_3pair_…` / `…_4pair_…` |
 | Input depth source   | `INPUT_DEPTH_SUBDIR` env | `pro_refine` (raw PRO) / `Da2Finetune` (ours) |
 | α/β calibration      | `--no_pro_calib` flag in script | present → off, absent → on |
@@ -265,7 +265,7 @@ are merged via skip-connection projections + a bottleneck fuse.
 | DINO refiner trainer        | [`MVP_MODEL/train_mvp_stereo_dino.py`](MVP_MODEL/train_mvp_stereo_dino.py) |
 | DA2 batch inference         | [`scripts/infer_da2_finetune_batch.py`](scripts/infer_da2_finetune_batch.py) |
 | Canonical 80/20 manifests   | [`manifests/source/stereo_{train,val}_manifest.csv`](manifests/source/) |
-| Experiment launchers        | `run_spur_*.sh` (top level) |
+| Experiment launchers        | `scripts/run_spur_*.sh` (top level) |
 
 Common knobs you'll want to edit:
 
@@ -276,7 +276,7 @@ Common knobs you'll want to edit:
 | Disable cross-view fusion           | `--no_fusion` flag in any DINO/CNN launcher                           |
 | Disable pose embedding              | `--no_pose` flag in any DINO/CNN launcher                             |
 | Change # stereo pairs               | `--n_views {2,4,6,8}` (DINO) or pick a different `_Npair_` launcher    |
-| Change box-loss formulation         | `--box-loss-mode {union,weighted,balanced,anchor}` in `run_spur_boxlr_*.sh` |
+| Change box-loss formulation         | `--box-loss-mode {union,weighted,balanced,anchor}` in `scripts/run_spur_boxlr_*.sh` |
 | Swap dataset                        | `DATASET=full_trunk` or `full_spur`                                    |
 
 ## 📊 Results
