@@ -4,6 +4,8 @@ Vision-based **metric depth estimation for robotic apple-tree pruning**.
 Synthetic-data pipeline, Depth Anything V2 fine-tuning code, and stereo /
 multi-view refinement ablations (CNN U-Net and DINOv2 + depth-side branch).
 
+📄 **Read the full paper (Overleaf, read-only):** <https://www.overleaf.com/read/xxqdntwhhstm#e50d81>
+
 ### Built With
 
 [![Python](https://img.shields.io/badge/Python-3.10-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
